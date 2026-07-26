@@ -110,3 +110,53 @@ test('the hook module imports no heavy dependencies', () => {
   assert.doesNotMatch(source, /@modelcontextprotocol/, 'hook must not import the MCP SDK');
   assert.doesNotMatch(source, /from 'zod'/, 'hook must not import zod');
 });
+
+import { WRITE_TOOLS, targetPathOf, buildDenyOutput } from '../src/hook.ts';
+
+test('write-capable tools are recognised, read-only ones are not', () => {
+  for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+    assert.ok(WRITE_TOOLS.has(tool), `${tool} should be enforced`);
+  }
+  for (const tool of ['Read', 'Grep', 'Glob', 'WebSearch']) {
+    assert.equal(WRITE_TOOLS.has(tool), false, `${tool} must not be enforced`);
+  }
+});
+
+test('targetPathOf reads file_path from an edit', () => {
+  assert.equal(
+    targetPathOf({ tool_name: 'Edit', tool_input: { file_path: '/repo/server/api.ts' } }),
+    '/repo/server/api.ts',
+  );
+});
+
+test('targetPathOf reads notebook_path as well', () => {
+  assert.equal(
+    targetPathOf({ tool_name: 'NotebookEdit', tool_input: { notebook_path: '/repo/a.ipynb' } }),
+    '/repo/a.ipynb',
+  );
+});
+
+test('targetPathOf returns null when there is no path to check', () => {
+  assert.equal(targetPathOf({ tool_name: 'Edit', tool_input: {} }), null);
+  assert.equal(targetPathOf({ tool_name: 'Read' }), null);
+});
+
+test('buildDenyOutput ALWAYS carries permissionDecisionReason', () => {
+  // Phase 0: a deny without a reason makes Codex report the hook Failed and
+  // run the tool anyway — a silent fail-open. This test is the guard.
+  const out = buildDenyOutput('PreToolUse', 'BLOCKED by mesh: held by codex-1');
+  const specific = (out.hookSpecificOutput ?? {}) as Record<string, unknown>;
+  assert.equal(specific.hookEventName, 'PreToolUse');
+  assert.equal(specific.permissionDecision, 'deny');
+  assert.ok(
+    typeof specific.permissionDecisionReason === 'string' &&
+      specific.permissionDecisionReason.length > 0,
+    'a deny without a reason silently fails open on Codex',
+  );
+});
+
+test('buildDenyOutput does not emit systemMessage alongside the decision', () => {
+  // Phase 0 measured this exact combination reporting Failed.
+  const out = buildDenyOutput('PreToolUse', 'blocked');
+  assert.equal('systemMessage' in out, false);
+});

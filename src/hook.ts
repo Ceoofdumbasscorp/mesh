@@ -115,6 +115,42 @@ export function buildHookOutput(event: string, context: string | null): Record<s
 }
 
 /**
+ * Tools that can modify a file. Only these are checked against claims —
+ * enforcing reads would cost a round-trip on every Grep for no benefit.
+ */
+export const WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+]);
+
+export function targetPathOf(input: HookInput): string | null {
+  const args = input.tool_input ?? {};
+  for (const key of ['file_path', 'notebook_path', 'path']) {
+    const value = args[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * A deny decision. permissionDecisionReason is NOT optional: Phase 0 measured
+ * that omitting it makes Codex report the hook as Failed and run the tool
+ * anyway — a silent fail-open that looks identical to a rejected payload.
+ * systemMessage is deliberately absent; that combination measured as Failed.
+ */
+export function buildDenyOutput(event: string, reason: string): Record<string, unknown> {
+  return {
+    hookSpecificOutput: {
+      hookEventName: event,
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
+/**
  * Fail-open at every step: any problem yields {} and the agent proceeds
  * exactly as it would without mesh installed.
  */
@@ -146,6 +182,18 @@ export async function runHook(
 
       const activity = summarizeTool(input);
       await client.request('touch', { sessionId, ...(activity ? { activity } : {}) });
+
+      // Enforcement: only write-capable tools, and only when a path is present.
+      const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
+      if (event === 'PreToolUse' && WRITE_TOOLS.has(tool)) {
+        const path = targetPathOf(input);
+        if (path) {
+          const verdict = await client.request('check', { sessionId, path });
+          if (verdict.ok && verdict.allowed === false && typeof verdict.reason === 'string') {
+            return buildDenyOutput(event, verdict.reason);
+          }
+        }
+      }
 
       const inbox = await client.request('inbox', { sessionId });
       if (!inbox.ok) return {};
