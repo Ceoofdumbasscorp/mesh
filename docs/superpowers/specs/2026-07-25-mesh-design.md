@@ -185,9 +185,30 @@ entire session. Design:
    so write-tool enforcement is a small local file read, not a round-trip.
 4. The socket is used only for actual delivery, claim mutations, and blocking asks.
 
-Acceptance criterion: **p95 added latency < 30ms on the no-traffic path, < 80ms overall.** Measured
-by a benchmark in CI, not by assertion. If Node process startup proves too costly, an optional
-prebuilt native shim is a later optimization, not a v1 requirement.
+Acceptance criterion, **revised after measurement in Phase 2: p95 < 90ms total for the hook.**
+The original "< 30ms" was never reachable and has been retired. Measured on the development
+machine (Node 25.8.1, Apple silicon), per hook invocation:
+
+| Component | Cost | Note |
+|---|---|---|
+| Node process startup | **~50ms** | Irreducible floor without a native shim |
+| Node builtins (`net`, `fs`, `child_process`, `os`, `url`) | **~0ms** | Free; not worth avoiding |
+| TypeScript type-stripping | **~40ms** | ~20ms for the first `.ts` module, ~10ms each after |
+| MCP SDK import | **~50ms** | Never imported by the hook |
+
+Two consequences, both now enforced in code:
+
+1. **The shipped package must run compiled JavaScript.** From `dist/` the hook measures **62ms
+   p95**; from TypeScript source it is **98ms**. Type-stripping, not any dependency, is the whole
+   difference. `mesh init` must point hooks at the built entry point.
+2. **The hook never imports the MCP SDK or zod, and never autostarts the daemon.** The CLI loads
+   the MCP server through a dynamic import; a test reads `src/hook.ts` and fails if either import
+   appears. Autostarting from the hook was measured and removed — the MCP server owns daemon
+   startup.
+
+`npm run bench:hook` measures both entry points and exits non-zero above 90ms, so this cannot
+silently regress. Beating the ~50ms Node floor requires a native shim; that remains a later
+optimization, not a v1 requirement.
 
 **Fail-open is absolute.** Socket missing, daemon down, connect exceeding 100ms, malformed
 response, unexpected exception — the hook exits 0 and the agent proceeds exactly as it would
@@ -404,6 +425,8 @@ status quo.
 | Deny silently fails open without `permissionDecisionReason` | Codex reports the hook `Failed` and runs the tool anyway. Always emit the reason; contract test asserts it. |
 | Codex `PreToolUse` fires for shell commands only | Non-shell edit paths (`apply_patch`) may bypass enforcement. Phase 3 must measure the gap and document it rather than overclaim coverage. |
 | Host hook schemas drift | Contract tests per host; `mesh doctor` reports the live capability matrix. |
-| Hook startup cost too high | Fast path avoids IPC entirely; benchmark gates it; native shim available as a later optimization. |
+| ~~Hook startup cost too high~~ | **MEASURED in Phase 2.** 62ms p95 compiled, against a ~50ms Node floor. `npm run bench:hook` fails above 90ms. The original 30ms target was retired as unreachable. |
+| MCP server and hook may register the same session twice | The MCP server is not told the host's session id and falls back to `pid-<ppid>`. `mesh init` (Phase 5) must set `MESH_SESSION_ID` to the id the hook reports. |
+| A transient connection closing could evict a live agent | **FIXED before Phase 2.** `register` takes `own: true`; only an owning connection's close unregisters. The MCP server sets it, the hook does not. Regression-tested. |
 | Agents ignore the tools | Injected context is directive and `mesh init` adds a short usage note to the agent's instructions. |
 | Stale claim wedges the user | TTL + connection-liveness + idle auto-downgrade + `--force`, with the command named in every denial. |
