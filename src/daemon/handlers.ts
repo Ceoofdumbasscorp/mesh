@@ -5,6 +5,7 @@ import type { Response } from '../protocol.ts';
 import { resolveWorkspace } from '../workspace.ts';
 import type { Mailbox } from '../mailbox.ts';
 import type { AskRegistry } from '../asks.ts';
+import type { ClaimTable } from '../claims.ts';
 import type { Waiters } from './waiters.ts';
 
 export interface DaemonState {
@@ -13,7 +14,31 @@ export interface DaemonState {
   clock: Clock;
   mailbox: Mailbox;
   asks: AskRegistry;
+  claims: ClaimTable;
   waiters: Waiters;
+}
+
+/** Silence beyond this downgrades a holder's claim from deny to warning. */
+const HOLDER_IDLE_THRESHOLD_MS = 15 * 60_000;
+
+/**
+ * The text an agent sees when its edit is blocked. Composed on the daemon so
+ * every client shows the same wording, and written to be acted on rather than
+ * merely to explain: it names the holder, how to unblock, and the escape hatch.
+ */
+export function denialReason(input: {
+  path: string;
+  holder: string;
+  pattern: string;
+  holderIdleMs: number;
+}): string {
+  const idleSeconds = Math.round(input.holderIdleMs / 1000);
+  return (
+    `BLOCKED by mesh: ${input.path} is claimed exclusively by ${input.holder} ` +
+    `(matched "${input.pattern}", active ${idleSeconds}s ago). Do not edit it. ` +
+    `Either mesh_ask ${input.holder} to make the change, or run ` +
+    `\`mesh release --force "${input.pattern}"\` if ${input.holder} has been abandoned.`
+  );
 }
 
 /**
@@ -144,6 +169,10 @@ export async function handleRequest(
       const sessionId = readString(req, 'sessionId') ?? ctx.sessionId;
       if (!sessionId) return fail(id, 'touch requires "sessionId"');
       const known = state.registry.touch(sessionId, readString(req, 'activity'));
+      // Activity is what keeps a claim alive: an agent still working never
+      // loses its claims, while a stalled one lets them lapse.
+      const toucher = state.registry.get(sessionId);
+      if (toucher) state.claims.refresh(toucher.name);
       return { id, ok: true, known };
     }
 
@@ -310,6 +339,123 @@ export async function handleRequest(
       state.waiters.resolve(askId, 'answered');
 
       return { id, ok: true, askId, to: result.ask.from };
+    }
+
+    case 'claim': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'claim requires a registered agent (call register first)');
+      const patterns = Array.isArray(req.patterns)
+        ? req.patterns.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [];
+      if (patterns.length === 0) return fail(id, 'claim requires a non-empty "patterns" array');
+
+      const mode = req.mode === 'shared' ? 'shared' : 'exclusive';
+      const result = state.claims.claim({
+        holder: caller.name,
+        workspaceRoot: caller.workspaceRoot,
+        patterns,
+        mode,
+        ...(typeof req.ttlMs === 'number' ? { ttlMs: req.ttlMs } : {}),
+      });
+
+      if (!result.ok) {
+        const first = result.conflicts[0];
+        return fail(
+          id,
+          `Cannot claim: ${first?.holder} already holds "${first?.pattern}". ` +
+            `Ask them to release it, or claim a narrower path.`,
+        );
+      }
+
+      state.journal.append('claim', { holder: caller.name, patterns, mode });
+      return {
+        id,
+        ok: true,
+        claimId: result.claim.id,
+        patterns,
+        mode,
+        expiresAt: result.claim.expiresAt,
+      };
+    }
+
+    case 'release': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'release requires a registered agent (call register first)');
+      const patterns = Array.isArray(req.patterns)
+        ? req.patterns.filter((p): p is string => typeof p === 'string')
+        : undefined;
+
+      let released = 0;
+      if (req.force === true) {
+        for (const pattern of patterns ?? []) {
+          released += state.claims.forceRelease(caller.workspaceRoot, pattern);
+        }
+        state.journal.append('release-force', { by: caller.name, patterns });
+      } else {
+        released = state.claims.release(caller.name, patterns);
+        state.journal.append('release', { holder: caller.name, patterns, released });
+      }
+      return { id, ok: true, released };
+    }
+
+    case 'claims': {
+      const caller = callerOf(state, ctx, req);
+      const root =
+        caller?.workspaceRoot ?? resolveWorkspace(readString(req, 'cwd') ?? process.cwd()).root;
+      const now = state.clock();
+      return {
+        id,
+        ok: true,
+        claims: state.claims.list(root).map((c) => ({
+          id: c.id,
+          holder: c.holder,
+          patterns: c.patterns,
+          mode: c.mode,
+          expiresInMs: c.expiresAt - now,
+        })),
+      };
+    }
+
+    case 'check': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return { id, ok: true, allowed: true };
+      const rawPath = readString(req, 'path');
+      if (!rawPath) return { id, ok: true, allowed: true };
+
+      // Accept absolute or workspace-relative paths: hooks report absolute
+      // ones, agents think in relative ones, and both must hit the same claim.
+      const relative = rawPath.startsWith(caller.workspaceRoot)
+        ? rawPath.slice(caller.workspaceRoot.length).replace(/^\/+/, '')
+        : rawPath;
+
+      const verdict = state.claims.check(caller.workspaceRoot, relative, caller.name);
+      if (verdict.allowed) return { id, ok: true, allowed: true };
+
+      const holderName = verdict.holder as string;
+      const pattern = verdict.pattern as string;
+      const holderAgent = state.registry.byName(caller.workspaceRoot, holderName);
+      const holderIdleMs = holderAgent ? state.clock() - holderAgent.lastSeen : 0;
+
+      // A stalled holder must not wedge a working agent. Warn instead of deny.
+      if (holderAgent && holderIdleMs > HOLDER_IDLE_THRESHOLD_MS) {
+        return {
+          id,
+          ok: true,
+          allowed: true,
+          warning:
+            `${holderName} holds "${pattern}" but has been idle ` +
+            `${Math.round(holderIdleMs / 1000)}s. Proceeding; consider releasing the claim.`,
+        };
+      }
+
+      return {
+        id,
+        ok: true,
+        allowed: false,
+        holder: holderName,
+        pattern,
+        reason: denialReason({ path: relative, holder: holderName, pattern, holderIdleMs }),
+      };
     }
 
     case 'shutdown': {

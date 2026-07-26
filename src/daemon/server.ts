@@ -7,6 +7,7 @@ import { Journal } from '../journal.ts';
 import { Registry } from '../registry.ts';
 import { Mailbox } from '../mailbox.ts';
 import { AskRegistry } from '../asks.ts';
+import { ClaimTable } from '../claims.ts';
 import { Waiters } from './waiters.ts';
 import { createFrameDecoder, encodeFrame } from '../protocol.ts';
 import { handleRequest } from './handlers.ts';
@@ -34,6 +35,7 @@ export function createDaemonState(options: {
     journal: new Journal(options.journalPath, clock),
     mailbox: new Mailbox({ clock }),
     asks: new AskRegistry({ clock }),
+    claims: new ClaimTable({ clock }),
     waiters: new Waiters(),
   };
 }
@@ -139,9 +141,12 @@ export class MeshServer {
       if (ctx.sessionId && ctx.owns) {
         const removed = this.#options.state.registry.unregister(ctx.sessionId);
         if (removed) {
+          // A dead agent must not hold paths hostage.
+          const releasedClaims = this.#options.state.claims.release(removed.name);
           this.#options.state.journal.append('disconnect', {
             name: removed.name,
             sessionId: ctx.sessionId,
+            releasedClaims,
           });
         }
         ctx.sessionId = null;

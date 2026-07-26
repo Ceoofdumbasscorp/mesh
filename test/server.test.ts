@@ -10,6 +10,7 @@ import { Registry } from '../src/registry.ts';
 import { Journal } from '../src/journal.ts';
 import { Mailbox } from '../src/mailbox.ts';
 import { AskRegistry } from '../src/asks.ts';
+import { ClaimTable } from '../src/claims.ts';
 import { Waiters } from '../src/daemon/waiters.ts';
 import { MeshServer } from '../src/daemon/server.ts';
 import { createFrameDecoder, encodeFrame } from '../src/protocol.ts';
@@ -27,6 +28,7 @@ function makeState(base: string): DaemonState {
     journal: new Journal(join(base, 'journal.jsonl'), clock.now),
     mailbox: new Mailbox({ clock: clock.now }),
     asks: new AskRegistry({ clock: clock.now }),
+    claims: new ClaimTable({ clock: clock.now }),
     waiters: new Waiters(),
   };
 }

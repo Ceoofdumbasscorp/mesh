@@ -8,6 +8,7 @@ import { Registry } from '../src/registry.ts';
 import { Journal } from '../src/journal.ts';
 import { Mailbox } from '../src/mailbox.ts';
 import { AskRegistry } from '../src/asks.ts';
+import { ClaimTable } from '../src/claims.ts';
 import { Waiters } from '../src/daemon/waiters.ts';
 import { handleRequest } from '../src/daemon/handlers.ts';
 import type { ConnectionContext, DaemonState } from '../src/daemon/handlers.ts';
@@ -21,6 +22,7 @@ function setup() {
     journal: new Journal(join(base, 'journal.jsonl'), clock.now),
     mailbox: new Mailbox({ clock: clock.now }),
     asks: new AskRegistry({ clock: clock.now }),
+    claims: new ClaimTable({ clock: clock.now }),
     waiters: new Waiters(),
   };
   return { base, clock, state, cleanup: () => rmSync(base, { recursive: true, force: true }) };
