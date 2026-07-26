@@ -212,6 +212,106 @@ export async function handleRequest(
       };
     }
 
+    case 'ask': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'ask requires a registered agent (call register first)');
+      const target = readString(req, 'to');
+      if (!target) return fail(id, 'ask requires "to"');
+
+      const names = resolveTargets(state, caller.workspaceRoot, caller.name, target);
+      const targetName = names[0];
+      if (names.length === 0 || targetName === undefined) {
+        return {
+          id,
+          ok: true,
+          state: 'undeliverable',
+          note: `No agent matching "${target}" is on this workspace right now.`,
+        };
+      }
+      if (names.length > 1) {
+        return fail(id, `"${target}" matches ${names.length} agents; ask one by name`);
+      }
+
+      const timeoutMs = typeof req.timeoutMs === 'number' ? req.timeoutMs : 90_000;
+      const created = state.asks.create({
+        from: caller.name,
+        to: targetName,
+        body: req.body as string,
+        timeoutMs,
+      });
+      if (!created.ok) return fail(id, created.error);
+
+      state.mailbox.deliver({
+        kind: 'ask',
+        from: caller.name,
+        to: targetName,
+        body: created.ask.body,
+        askId: created.ask.id,
+      });
+      state.journal.append('ask', { id: created.ask.id, from: caller.name, to: targetName });
+
+      // A hook-based transport cannot reach an agent that is not running
+      // tools, so blocking on an idle peer would just burn the timeout.
+      // Queue instead, and say so.
+      const targetView = state.registry
+        .list(caller.workspaceRoot)
+        .find((a) => a.name === targetName);
+      if (targetView?.status === 'idle') {
+        return {
+          id,
+          ok: true,
+          state: 'queued',
+          askId: created.ask.id,
+          to: targetName,
+          note: `${targetName} is idle, so the question is queued and will be delivered when it next acts.`,
+        };
+      }
+
+      const outcome = await state.waiters.wait(created.ask.id, timeoutMs);
+      const settled = state.asks.get(created.ask.id);
+
+      if (outcome === 'answered' && settled?.state === 'answered') {
+        return {
+          id,
+          ok: true,
+          state: 'answered',
+          askId: created.ask.id,
+          from: targetName,
+          body: settled.answer,
+        };
+      }
+      return {
+        id,
+        ok: true,
+        state: 'timeout',
+        askId: created.ask.id,
+        to: targetName,
+        note: `No answer within ${timeoutMs}ms. The question is still queued for ${targetName}.`,
+      };
+    }
+
+    case 'reply': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'reply requires a registered agent (call register first)');
+      const askId = typeof req.askId === 'number' ? req.askId : null;
+      if (askId === null) return fail(id, 'reply requires a numeric "askId"');
+
+      const result = state.asks.answer(askId, caller.name, req.body as string);
+      if (!result.ok || !result.ask) return fail(id, result.error ?? 'reply failed');
+
+      state.mailbox.deliver({
+        kind: 'reply',
+        from: caller.name,
+        to: result.ask.from,
+        body: result.ask.answer as string,
+        askId,
+      });
+      state.journal.append('reply', { id: askId, from: caller.name, to: result.ask.from });
+      state.waiters.resolve(askId, 'answered');
+
+      return { id, ok: true, askId, to: result.ask.from };
+    }
+
     case 'shutdown': {
       state.journal.append('shutdown', {});
       // Answer before stopping, so the caller is not left waiting on a socket
