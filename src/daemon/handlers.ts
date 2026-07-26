@@ -3,11 +3,17 @@ import type { Journal } from '../journal.ts';
 import type { Registry } from '../registry.ts';
 import type { Response } from '../protocol.ts';
 import { resolveWorkspace } from '../workspace.ts';
+import type { Mailbox } from '../mailbox.ts';
+import type { AskRegistry } from '../asks.ts';
+import type { Waiters } from './waiters.ts';
 
 export interface DaemonState {
   registry: Registry;
   journal: Journal;
   clock: Clock;
+  mailbox: Mailbox;
+  asks: AskRegistry;
+  waiters: Waiters;
 }
 
 /**
@@ -38,11 +44,41 @@ function readString(source: Record<string, unknown>, key: string): string | unde
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-export function handleRequest(
+/**
+ * The agent behind this connection. Messaging ops need a sender identity, and
+ * an unregistered connection has none.
+ */
+function callerOf(
+  state: DaemonState,
+  ctx: ConnectionContext,
+  req: Record<string, unknown>,
+): { name: string; workspaceRoot: string } | null {
+  const sessionId = readString(req, 'sessionId') ?? ctx.sessionId;
+  if (!sessionId) return null;
+  const agent = state.registry.get(sessionId);
+  if (!agent) return null;
+  return { name: agent.name, workspaceRoot: agent.workspaceRoot };
+}
+
+/** Resolves a target string to agent names: a name, a role, or "*". */
+function resolveTargets(
+  state: DaemonState,
+  workspaceRoot: string,
+  senderName: string,
+  target: string,
+): string[] {
+  const peers = state.registry.list(workspaceRoot).filter((a) => a.name !== senderName);
+  if (target === '*') return peers.map((a) => a.name);
+  const byName = peers.filter((a) => a.name === target);
+  if (byName.length > 0) return byName.map((a) => a.name);
+  return peers.filter((a) => a.role === target).map((a) => a.name);
+}
+
+export async function handleRequest(
   state: DaemonState,
   ctx: ConnectionContext,
   request: unknown,
-): Response {
+): Promise<Response> {
   if (typeof request !== 'object' || request === null || Array.isArray(request)) {
     return fail(0, 'Request must be a JSON object');
   }
@@ -128,6 +164,51 @@ export function handleRequest(
         workspace: workspace.root,
         workspaceLabel: workspace.label,
         agents,
+      };
+    }
+
+    case 'send': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'send requires a registered agent (call register first)');
+      const target = readString(req, 'to');
+      if (!target) return fail(id, 'send requires "to"');
+
+      const names = resolveTargets(state, caller.workspaceRoot, caller.name, target);
+      if (names.length === 0) return fail(id, `No agent matching "${target}" in this workspace`);
+
+      try {
+        for (const name of names) {
+          state.mailbox.deliver({
+            kind: 'message',
+            from: caller.name,
+            to: name,
+            body: req.body as string,
+          });
+        }
+      } catch (error) {
+        return fail(id, (error as Error).message);
+      }
+
+      state.journal.append('send', { from: caller.name, to: names, count: names.length });
+      return { id, ok: true, delivered: names.length, to: names };
+    }
+
+    case 'inbox': {
+      const caller = callerOf(state, ctx, req);
+      if (!caller) return fail(id, 'inbox requires a registered agent (call register first)');
+      const drain = req.drain !== false;
+      const envelopes = drain ? state.mailbox.drain(caller.name) : state.mailbox.peek(caller.name);
+      return {
+        id,
+        ok: true,
+        messages: envelopes.map((e) => ({
+          id: e.id,
+          kind: e.kind,
+          from: e.from,
+          body: e.body,
+          at: e.at,
+          askId: e.askId,
+        })),
       };
     }
 

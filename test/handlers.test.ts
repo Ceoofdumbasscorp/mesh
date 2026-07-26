@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { testClock } from '../src/clock.ts';
 import { Registry } from '../src/registry.ts';
 import { Journal } from '../src/journal.ts';
+import { Mailbox } from '../src/mailbox.ts';
+import { AskRegistry } from '../src/asks.ts';
+import { Waiters } from '../src/daemon/waiters.ts';
 import { handleRequest } from '../src/daemon/handlers.ts';
 import type { ConnectionContext, DaemonState } from '../src/daemon/handlers.ts';
 
@@ -16,15 +19,18 @@ function setup() {
     clock: clock.now,
     registry: new Registry({ clock: clock.now }),
     journal: new Journal(join(base, 'journal.jsonl'), clock.now),
+    mailbox: new Mailbox({ clock: clock.now }),
+    asks: new AskRegistry({ clock: clock.now }),
+    waiters: new Waiters(),
   };
   const ctx: ConnectionContext = { sessionId: null, owns: false };
   return { base, clock, state, ctx, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-test('ping answers with ok and the daemon time', () => {
+test('ping answers with ok and the daemon time', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const res = handleRequest(state, ctx, { id: 1, op: 'ping' });
+    const res = await handleRequest(state, ctx, { id: 1, op: 'ping' });
     assert.equal(res.ok, true);
     assert.equal(res.id, 1);
     assert.equal(res.at, 1000);
@@ -33,10 +39,10 @@ test('ping answers with ok and the daemon time', () => {
   }
 });
 
-test('unknown op is rejected without throwing', () => {
+test('unknown op is rejected without throwing', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const res = handleRequest(state, ctx, { id: 2, op: 'nonsense' });
+    const res = await handleRequest(state, ctx, { id: 2, op: 'nonsense' });
     assert.equal(res.ok, false);
     assert.match(String(res.error), /Unknown op/);
   } finally {
@@ -44,10 +50,10 @@ test('unknown op is rejected without throwing', () => {
   }
 });
 
-test('a request missing op is rejected', () => {
+test('a request missing op is rejected', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const res = handleRequest(state, ctx, { id: 3 });
+    const res = await handleRequest(state, ctx, { id: 3 });
     assert.equal(res.ok, false);
     assert.match(String(res.error), /op/);
   } finally {
@@ -55,10 +61,10 @@ test('a request missing op is rejected', () => {
   }
 });
 
-test('register assigns a name and binds the session to the connection', () => {
+test('register assigns a name and binds the session to the connection', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const res = handleRequest(state, ctx, {
+    const res = await handleRequest(state, ctx, {
       id: 4, op: 'register', sessionId: 's1', provider: 'claude', cwd: process.cwd(),
     });
     assert.equal(res.ok, true);
@@ -69,14 +75,14 @@ test('register assigns a name and binds the session to the connection', () => {
   }
 });
 
-test('register requires sessionId and provider', () => {
+test('register requires sessionId and provider', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const missingSession = handleRequest(state, ctx, { id: 5, op: 'register', provider: 'claude' });
+    const missingSession = await handleRequest(state, ctx, { id: 5, op: 'register', provider: 'claude' });
     assert.equal(missingSession.ok, false);
     assert.match(String(missingSession.error), /sessionId/);
 
-    const missingProvider = handleRequest(state, ctx, { id: 6, op: 'register', sessionId: 's1' });
+    const missingProvider = await handleRequest(state, ctx, { id: 6, op: 'register', sessionId: 's1' });
     assert.equal(missingProvider.ok, false);
     assert.match(String(missingProvider.error), /provider/);
   } finally {
@@ -84,16 +90,16 @@ test('register requires sessionId and provider', () => {
   }
 });
 
-test('who lists peers in the caller workspace with status', () => {
+test('who lists peers in the caller workspace with status', async () => {
   const { state, ctx, cleanup } = setup();
   try {
     const cwd = process.cwd();
-    handleRequest(state, ctx, { id: 7, op: 'register', sessionId: 's1', provider: 'claude', cwd });
-    handleRequest(state, { sessionId: null, owns: false }, {
+    await handleRequest(state, ctx, { id: 7, op: 'register', sessionId: 's1', provider: 'claude', cwd });
+    await handleRequest(state, { sessionId: null, owns: false }, {
       id: 8, op: 'register', sessionId: 's2', provider: 'codex', cwd, role: 'backend',
     });
 
-    const res = handleRequest(state, ctx, { id: 9, op: 'who', cwd });
+    const res = await handleRequest(state, ctx, { id: 9, op: 'who', cwd });
     assert.equal(res.ok, true);
     const agents = res.agents as Array<Record<string, unknown>>;
     assert.equal(agents.length, 2);
@@ -105,17 +111,17 @@ test('who lists peers in the caller workspace with status', () => {
   }
 });
 
-test('touch updates activity and is reflected by who', () => {
+test('touch updates activity and is reflected by who', async () => {
   const { state, ctx, cleanup } = setup();
   try {
     const cwd = process.cwd();
-    handleRequest(state, ctx, { id: 10, op: 'register', sessionId: 's1', provider: 'claude', cwd });
-    const touched = handleRequest(state, ctx, {
+    await handleRequest(state, ctx, { id: 10, op: 'register', sessionId: 's1', provider: 'claude', cwd });
+    const touched = await handleRequest(state, ctx, {
       id: 11, op: 'touch', sessionId: 's1', activity: 'Edit app/page.tsx',
     });
     assert.equal(touched.ok, true);
 
-    const res = handleRequest(state, ctx, { id: 12, op: 'who', cwd });
+    const res = await handleRequest(state, ctx, { id: 12, op: 'who', cwd });
     const agents = res.agents as Array<Record<string, unknown>>;
     assert.equal(agents[0]?.activity, 'Edit app/page.tsx');
   } finally {
@@ -123,30 +129,30 @@ test('touch updates activity and is reflected by who', () => {
   }
 });
 
-test('unregister removes the agent and clears the connection binding', () => {
+test('unregister removes the agent and clears the connection binding', async () => {
   const { state, ctx, cleanup } = setup();
   try {
     const cwd = process.cwd();
-    handleRequest(state, ctx, { id: 13, op: 'register', sessionId: 's1', provider: 'claude', cwd });
-    const res = handleRequest(state, ctx, { id: 14, op: 'unregister', sessionId: 's1' });
+    await handleRequest(state, ctx, { id: 13, op: 'register', sessionId: 's1', provider: 'claude', cwd });
+    const res = await handleRequest(state, ctx, { id: 14, op: 'unregister', sessionId: 's1' });
 
     assert.equal(res.ok, true);
     assert.equal(ctx.sessionId, null);
-    const who = handleRequest(state, ctx, { id: 15, op: 'who', cwd });
+    const who = await handleRequest(state, ctx, { id: 15, op: 'who', cwd });
     assert.deepEqual(who.agents, []);
   } finally {
     cleanup();
   }
 });
 
-test('every handled op is journaled except the noisy read-only ones', () => {
+test('every handled op is journaled except the noisy read-only ones', async () => {
   const { state, ctx, cleanup } = setup();
   try {
     const cwd = process.cwd();
-    handleRequest(state, ctx, { id: 16, op: 'register', sessionId: 's1', provider: 'claude', cwd });
-    handleRequest(state, ctx, { id: 17, op: 'who', cwd });
-    handleRequest(state, ctx, { id: 18, op: 'ping' });
-    handleRequest(state, ctx, { id: 19, op: 'unregister', sessionId: 's1' });
+    await handleRequest(state, ctx, { id: 16, op: 'register', sessionId: 's1', provider: 'claude', cwd });
+    await handleRequest(state, ctx, { id: 17, op: 'who', cwd });
+    await handleRequest(state, ctx, { id: 18, op: 'ping' });
+    await handleRequest(state, ctx, { id: 19, op: 'unregister', sessionId: 's1' });
 
     const kinds = state.journal.read().map((e) => e.kind);
     assert.deepEqual(kinds, ['register', 'unregister'], 'who and ping must not flood the journal');
@@ -155,10 +161,10 @@ test('every handled op is journaled except the noisy read-only ones', () => {
   }
 });
 
-test('a non-object request is rejected', () => {
+test('a non-object request is rejected', async () => {
   const { state, ctx, cleanup } = setup();
   try {
-    const res = handleRequest(state, ctx, 'hello');
+    const res = await handleRequest(state, ctx, 'hello');
     assert.equal(res.ok, false);
     assert.equal(res.id, 0);
   } finally {

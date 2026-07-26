@@ -5,6 +5,9 @@ import { systemClock } from '../clock.ts';
 import type { Clock } from '../clock.ts';
 import { Journal } from '../journal.ts';
 import { Registry } from '../registry.ts';
+import { Mailbox } from '../mailbox.ts';
+import { AskRegistry } from '../asks.ts';
+import { Waiters } from './waiters.ts';
 import { createFrameDecoder, encodeFrame } from '../protocol.ts';
 import { handleRequest } from './handlers.ts';
 import type { ConnectionContext, DaemonState } from './handlers.ts';
@@ -29,6 +32,9 @@ export function createDaemonState(options: {
     clock,
     registry: new Registry({ clock, idleAfterMs: options.idleAfterMs }),
     journal: new Journal(options.journalPath, clock),
+    mailbox: new Mailbox({ clock }),
+    asks: new AskRegistry({ clock }),
+    waiters: new Waiters(),
   };
 }
 
@@ -111,8 +117,17 @@ export class MeshServer {
         return;
       }
       for (const frame of frames) {
-        const response = handleRequest(this.#options.state, ctx, frame);
-        socket.write(encodeFrame(response));
+        // Each frame is handled independently and concurrently. A blocking ask
+        // must never stall another connection — or another op on this one.
+        void (async () => {
+          let response;
+          try {
+            response = await handleRequest(this.#options.state, ctx, frame);
+          } catch (error) {
+            response = { id: 0, ok: false, error: `daemon error: ${(error as Error).message}` };
+          }
+          if (!socket.destroyed) socket.write(encodeFrame(response));
+        })();
       }
     });
 
@@ -165,6 +180,8 @@ export class MeshServer {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
 
+    // Disarm any parked asks so a shutdown does not leave timers running.
+    this.#options.state.waiters.clear();
     this.#options.state.journal.close();
     if (existsSync(this.#options.socketPath)) {
       try {

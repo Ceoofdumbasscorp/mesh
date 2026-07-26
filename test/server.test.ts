@@ -8,6 +8,9 @@ import { once } from 'node:events';
 import { testClock } from '../src/clock.ts';
 import { Registry } from '../src/registry.ts';
 import { Journal } from '../src/journal.ts';
+import { Mailbox } from '../src/mailbox.ts';
+import { AskRegistry } from '../src/asks.ts';
+import { Waiters } from '../src/daemon/waiters.ts';
 import { MeshServer } from '../src/daemon/server.ts';
 import { createFrameDecoder, encodeFrame } from '../src/protocol.ts';
 import type { DaemonState } from '../src/daemon/handlers.ts';
@@ -22,6 +25,9 @@ function makeState(base: string): DaemonState {
     clock: clock.now,
     registry: new Registry({ clock: clock.now }),
     journal: new Journal(join(base, 'journal.jsonl'), clock.now),
+    mailbox: new Mailbox({ clock: clock.now }),
+    asks: new AskRegistry({ clock: clock.now }),
+    waiters: new Waiters(),
   };
 }
 
