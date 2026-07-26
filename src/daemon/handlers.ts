@@ -16,6 +16,8 @@ export interface DaemonState {
  */
 export interface ConnectionContext {
   sessionId: string | null;
+  /** Set by the server so a client can ask the daemon to stop. */
+  requestShutdown?: () => void;
 }
 
 function fail(id: number, error: string): Response {
@@ -114,6 +116,14 @@ export function handleRequest(
         workspaceLabel: workspace.label,
         agents,
       };
+    }
+
+    case 'shutdown': {
+      state.journal.append('shutdown', {});
+      // Answer before stopping, so the caller is not left waiting on a socket
+      // that is about to disappear.
+      queueMicrotask(() => ctx.requestShutdown?.());
+      return { id, ok: true };
     }
 
     default:

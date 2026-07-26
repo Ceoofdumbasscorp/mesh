@@ -92,7 +92,12 @@ export class MeshServer {
     this.#connections.add(socket);
     this.#clearIdleTimer();
 
-    const ctx: ConnectionContext = { sessionId: null };
+    const ctx: ConnectionContext = {
+      sessionId: null,
+      requestShutdown: () => {
+        void this.close().then(() => this.#options.onShutdown?.());
+      },
+    };
     const decode = createFrameDecoder();
 
     socket.on('data', (chunk) => {
