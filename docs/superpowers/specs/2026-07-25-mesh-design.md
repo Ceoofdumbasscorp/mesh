@@ -23,18 +23,20 @@ solves it across vendors — Claude Code on the frontend, Codex on the backend.
 1. An agent can enumerate the other agents on the project and see what each is doing.
 2. An agent can ask another agent a question and block on the answer, in-turn, without human
    involvement.
-3. An agent is prevented — not merely advised — from editing a file another agent has claimed.
-4. Works with unmodified Claude Code and Codex, in any terminal host (plain Terminal, cmux,
+3. An agent can hand another agent a **task** and track it — accepted, in progress, done, failed —
+   with the result returned to the assigner. Delegation between peer sessions, not sub-agents.
+4. An agent is prevented — not merely advised — from editing a file another agent has claimed.
+5. Works with unmodified Claude Code and Codex, in any terminal host (plain Terminal, cmux,
    NEXORA, iTerm, VS Code). No PTY ownership, no screen scraping.
-5. Never breaks the user's agents. Every failure mode degrades to "agents behave as they do
+6. Never breaks the user's agents. Every failure mode degrades to "agents behave as they do
    today."
 
 ## Non-goals (v1)
 
 - No cross-machine mesh. Single host only.
 - No shared context or transcript sync. Agents exchange messages, not memory.
-- No task assignment, planning, or orchestration. mesh is a communication substrate; deciding
-  who does what stays with the human or a higher layer.
+- No planning, scheduling, or automatic work decomposition. mesh transports a task an agent chose
+  to delegate; it never decides on its own what should be done or who should do it.
 - No GUI. `mesh watch` is a terminal UI. NEXORA may later render the mesh, but consumes it as a
   client like anything else.
 
@@ -123,6 +125,7 @@ Authoritative state, all in memory:
 | claims | glob pattern → holder, mode, granted-at, expires-at |
 | mailboxes | per-agent queue of undelivered messages |
 | asks | pending question → asker, target, deadline, resolution |
+| tasks | id, title, body, assigner, assignee, state, result, timestamps |
 | feed | ring buffer, last 500 activity events per workspace |
 
 Durability is a single append-only `~/.mesh/journal.jsonl` used for crash recovery and `mesh log`.
@@ -145,6 +148,9 @@ config. This is the only channel through which an agent *acts*.
 | `mesh_reply` | Answer a pending question addressed to this agent |
 | `mesh_send` | Fire-and-forget message to one agent or broadcast; returns immediately |
 | `mesh_inbox` | Drain queued messages and unanswered questions addressed to this agent |
+| `mesh_assign` | Hand a task to a name or role; returns a task id |
+| `mesh_tasks` | Query the board: mine, theirs, by state |
+| `mesh_task_update` | Move a task's state and attach a result or reason |
 | `mesh_claim` | Claim glob patterns, `shared` or `exclusive`, with a TTL |
 | `mesh_release` | Release claims held by this agent |
 | `mesh_feed` | Recent cross-agent activity, on demand |
@@ -194,6 +200,8 @@ without mesh installed. mesh must never be capable of bricking a working agent.
 | `mesh init` | Write hook + MCP config into Claude and Codex; idempotent; backs up first |
 | `mesh watch` | Live TUI: agents present, current activity, claims held, messages in flight |
 | `mesh who` | One-shot snapshot |
+| `mesh board` | Every task across every agent, with state and age |
+| `mesh assign` | Hand a task to an agent from your own shell |
 | `mesh log` | Tail the journal |
 | `mesh release --force <pattern>` | Break a stuck claim |
 | `mesh doctor` | Verify hooks installed, daemon reachable, per-host capability matrix |
@@ -265,6 +273,66 @@ Blocking asks work well in the actual target scenario — two agents both mid-ta
 cleanly rather than hanging. PTY-level injection for hosts that own the terminal (NEXORA, cmux)
 is a possible v2 enhancement, explicitly out of scope here.
 
+## Task delegation
+
+The difference between a message and a task is that a task **has a state you can check later**.
+`mesh_send` is fire-and-forget; once sent, the sender has no idea what became of it. A task
+persists, so an agent can hand off work and get on with its own, then find out how it went.
+
+### Lifecycle
+
+```
+                    ┌── declined (reason)
+  proposed ─────────┤
+                    └── accepted ──> in_progress ──┬── done (result)
+                                                   ├── failed (reason)
+                                                   └── cancelled (by assigner)
+```
+
+- **proposed** — `mesh_assign` creates the task and queues it for the assignee. The assigner is
+  not blocked; assignment returns a task id immediately.
+- **accepted / declined** — the assignee decides. Declining requires a reason, which is returned
+  to the assigner. An agent that is deep in unrelated work is expected to decline rather than
+  silently sit on the task.
+- **in_progress** — set when the assignee actually starts. This is what `mesh who` and `mesh board`
+  report.
+- **done / failed** — terminal. The result or failure reason is delivered to the assigner's inbox
+  and injected on its next hook, so the assigner learns the outcome without polling.
+- **cancelled** — the assigner withdraws a task the assignee has not completed.
+
+### Delivery and the idle problem
+
+Task assignment rides the same injection channel as messages, and inherits the same limitation:
+**an idle agent cannot be reached until it next acts.** A task assigned to an idle agent sits in
+`proposed` and is delivered the moment that agent does anything. `mesh_assign` says so in its
+return value rather than pretending the handoff landed, and `mesh board` shows the human a
+`proposed` task aging so they can nudge the window.
+
+### Keeping agents honest
+
+Two mechanisms, because an agent that accepts a task and then wanders off is worse than one that
+declines:
+
+- **Stop-hook reminder.** When an agent tries to end its turn while holding `accepted` or
+  `in_progress` tasks, the `Stop` hook reminds it once, naming the open tasks. Once per task, never
+  a loop — an agent that has genuinely finished can always stop.
+- **Assignee death.** If the assignee's session dies, its non-terminal tasks revert to `proposed`
+  and are reported to the assigner as orphaned rather than silently vanishing.
+
+### Optional claim coupling
+
+`mesh_assign` accepts an optional `paths` argument. When the assignee accepts, mesh grants it an
+exclusive claim on those paths for the task's duration and releases them on completion. This makes
+the common case — "you own the backend for this job" — a single step instead of a handoff plus a
+separate negotiation. Off by default; opt in per task.
+
+### Guardrails
+
+- Tasks may not be reassigned more than twice, preventing hot-potato loops.
+- An agent may hold at most 10 non-terminal assigned tasks; further assignments are refused with a
+  clear reason rather than queued indefinitely.
+- Task bodies share the 4KB message cap.
+
 ## Security
 
 - Socket mode 0600, owner-only. mesh is a local developer tool; any process running as the user is
@@ -281,16 +349,18 @@ Mirrors what worked for `constellation.js`, which reached 102 passing tests incl
 e2e.
 
 1. **Unit, injected clock.** Claim overlap and arbitration, TTL expiry, deadlock detection,
-   mailbox routing, name assignment, glob intersection. Pure functions over a fake `now` — no
-   timers, no sleeps.
+   mailbox routing, name assignment, glob intersection, and the full task state machine including
+   every illegal transition. Pure functions over a fake `now` — no timers, no sleeps.
 2. **Integration, real socket.** Real daemon, scripted fake clients. Concurrent claim races,
-   agent death mid-claim, journal crash recovery, ask timeout and deadlock paths.
+   agent death mid-claim, journal crash recovery, ask timeout and deadlock paths, and task orphan
+   recovery when an assignee dies mid-task.
 3. **Hook contract.** Feed recorded Claude and Codex hook payloads to `mesh hook` and assert the
    exact emitted JSON per host. Guards against silent host schema drift.
 4. **Latency benchmark.** Asserts the p95 budget above. A test, not a hope.
-5. **End-to-end, real agents.** Headless `claude -p` and `codex exec` with mesh wired in:
-   a real cross-vendor ask round-trip, and a real blocked write. This is the acceptance bar —
-   the same bar the NEXORA verification met on 2026-07-19.
+5. **End-to-end, real agents.** Headless `claude -p` and `codex exec` with mesh wired in: a real
+   cross-vendor ask round-trip, a real blocked write, and a real task handed from one vendor to the
+   other and reported back complete. This is the acceptance bar — the same bar the NEXORA
+   verification met on 2026-07-19.
 
 ## Stack
 
@@ -313,9 +383,15 @@ Agents become visible to each other.
 **Phase 3 — Claims and enforcement.** Claim table, glob intersection, TTL and liveness,
 `PreToolUse` deny, force-release. Agents stop colliding.
 
-**Phase 4 — Product surface.** `mesh init`, `mesh watch` TUI, README, latency benchmark.
+**Phase 4 — Task delegation.** Task store and lifecycle, `mesh_assign`/`mesh_tasks`/
+`mesh_task_update`, result delivery, Stop-hook reminder, orphan recovery, optional claim coupling.
+Agents can hand each other work.
 
-**Phase 5 — Acceptance.** Real Claude↔Codex e2e on a real project.
+**Phase 5 — Product surface.** `mesh init`, `mesh watch` and `mesh board` TUI, README, latency
+benchmark.
+
+**Phase 6 — Acceptance.** Real Claude↔Codex e2e on a real project: a cross-vendor task handed off,
+accepted, completed, and reported back.
 
 Each phase is independently useful and independently shippable. Phase 1 alone already beats the
 status quo.
