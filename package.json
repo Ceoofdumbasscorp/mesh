@@ -12,7 +12,9 @@
   },
   "scripts": {
     "test": "node --test 'test/**/*.test.ts'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "bench:hook": "node scripts/bench-hook.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

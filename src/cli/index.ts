@@ -3,6 +3,7 @@ import { MeshClient } from '../client.ts';
 import { renderWho } from './who.ts';
 import type { WhoAgent } from './who.ts';
 import { collectDoctorReport, renderDoctor } from './doctor.ts';
+import { runHook } from '../hook.ts';
 
 const USAGE = `mesh — cross-agent collaboration for terminal coding agents
 
@@ -10,6 +11,7 @@ Usage:
   mesh who        List the agents working in this workspace
   mesh doctor     Report daemon, runtime, and hook installation status
   mesh log        Print the daemon journal
+  mesh hook <ev>  Internal: called by Claude/Codex hooks, not by hand
   mesh daemon     Run the daemon in the foreground (normally automatic)
 `;
 
@@ -52,6 +54,16 @@ async function cmdLog(): Promise<number> {
   return 0;
 }
 
+async function cmdHook(event: string | undefined): Promise<number> {
+  const output = await runHook(event ?? 'PreToolUse');
+  // Exit only from the write callback: a bare process.exit() truncates
+  // unflushed stdout, which the host then reports as a failed hook.
+  await new Promise<void>((resolve) => {
+    process.stdout.write(JSON.stringify(output), () => resolve());
+  });
+  return 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const command = argv[2];
   switch (command) {
@@ -61,6 +73,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdDoctor();
     case 'log':
       return cmdLog();
+    case 'hook':
+      return cmdHook(argv[3]);
     case 'daemon':
       await import('../daemon/main.ts');
       return 0;
