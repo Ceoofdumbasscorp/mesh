@@ -4,11 +4,16 @@ import { renderWho } from './who.ts';
 import type { WhoAgent } from './who.ts';
 import { collectDoctorReport, renderDoctor } from './doctor.ts';
 import { runHook } from '../hook.ts';
+import { renderClaims } from './claims.ts';
+import type { ClaimRow } from './claims.ts';
 
 const USAGE = `mesh — cross-agent collaboration for terminal coding agents
 
 Usage:
   mesh who        List the agents working in this workspace
+  mesh claims     Show which agent has claimed which paths
+  mesh release [--force] <pattern>
+                  Release a claim; --force breaks another agent's
   mesh doctor     Report daemon, runtime, and hook installation status
   mesh log        Print the daemon journal
   mesh hook <ev>  Internal: called by Claude/Codex hooks, not by hand
@@ -55,6 +60,51 @@ async function cmdLog(): Promise<number> {
   return 0;
 }
 
+async function cmdClaims(): Promise<number> {
+  const client = await MeshClient.open();
+  if (!client) {
+    process.stdout.write('mesh: daemon unreachable — no claims visible\n');
+    return 0;
+  }
+  try {
+    const res = await client.request('claims', { cwd: process.cwd() });
+    if (!res.ok) {
+      process.stderr.write(`mesh: ${res.error ?? 'claims failed'}\n`);
+      return 1;
+    }
+    process.stdout.write(`${renderClaims((res.claims ?? []) as ClaimRow[])}\n`);
+    return 0;
+  } finally {
+    client.close();
+  }
+}
+
+async function cmdRelease(args: string[]): Promise<number> {
+  const force = args.includes('--force');
+  const patterns = args.filter((a) => !a.startsWith('--'));
+  if (patterns.length === 0) {
+    process.stderr.write('mesh: release needs a pattern, e.g. mesh release --force "server/**"\n');
+    return 1;
+  }
+
+  const client = await MeshClient.open();
+  if (!client) {
+    process.stdout.write('mesh: daemon unreachable — nothing to release\n');
+    return 0;
+  }
+  try {
+    const res = await client.request('release', { patterns, force, cwd: process.cwd() });
+    if (!res.ok) {
+      process.stderr.write(`mesh: ${res.error ?? 'release failed'}\n`);
+      return 1;
+    }
+    process.stdout.write(`Released ${res.released} claim(s).\n`);
+    return 0;
+  } finally {
+    client.close();
+  }
+}
+
 async function cmdHook(event: string | undefined): Promise<number> {
   const output = await runHook(event ?? 'PreToolUse');
   // Exit only from the write callback: a bare process.exit() truncates
@@ -74,6 +124,10 @@ export async function main(argv: string[]): Promise<number> {
       return cmdDoctor();
     case 'log':
       return cmdLog();
+    case 'claims':
+      return cmdClaims();
+    case 'release':
+      return cmdRelease(argv.slice(3));
     case 'hook':
       return cmdHook(argv[3]);
     case 'mcp': {

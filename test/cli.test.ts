@@ -66,3 +66,35 @@ test('renderDoctor flags each problem it finds', () => {
   assert.match(out, /not installed/i);
   assert.match(out, /mesh init/, 'names the command that fixes it');
 });
+
+import { renderClaims } from '../src/cli/claims.ts';
+
+test('renderClaims explains an empty table rather than printing a bare header', () => {
+  const out = renderClaims([]);
+  assert.match(out, /No claims/i);
+});
+
+test('renderClaims lists holder, patterns, mode, and remaining time', () => {
+  const out = renderClaims([
+    { id: 1, holder: 'codex-1', patterns: ['server/**'], mode: 'exclusive', expiresInMs: 540_000 },
+  ]);
+  assert.match(out, /codex-1/);
+  assert.match(out, /server\/\*\*/);
+  assert.match(out, /exclusive/);
+  assert.match(out, /9m/, 'remaining time is rendered in human units');
+});
+
+test('renderClaims joins multiple patterns on one row', () => {
+  const out = renderClaims([
+    { id: 1, holder: 'codex-1', patterns: ['server/**', 'db/**'], mode: 'exclusive', expiresInMs: 60_000 },
+  ]);
+  assert.match(out, /server\/\*\*/);
+  assert.match(out, /db\/\*\*/);
+});
+
+test('renderClaims flags a claim that is nearly expired', () => {
+  const out = renderClaims([
+    { id: 1, holder: 'codex-1', patterns: ['server/**'], mode: 'exclusive', expiresInMs: 5_000 },
+  ]);
+  assert.match(out, /expiring/i);
+});
