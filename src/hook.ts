@@ -123,15 +123,46 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   'Edit',
   'MultiEdit',
   'NotebookEdit',
+  // Codex's own edit tool. The Phase 3 spike measured Codex reaching for
+  // apply_patch FIRST and only falling back to a shell when blocked, so
+  // omitting it would leave its primary edit path unenforced.
+  'apply_patch',
 ]);
 
+/** `*** Update File: path` and its Add/Delete siblings, from the patch envelope. */
+const PATCH_FILE_LINE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
+
 export function targetPathOf(input: HookInput): string | null {
+  return targetPathsOf(input)[0] ?? null;
+}
+
+/**
+ * Every path a tool call would touch. Most tools name exactly one; an
+ * apply_patch can rewrite several files in a single call, and missing any of
+ * them would leave a claimed file unprotected.
+ */
+export function targetPathsOf(input: HookInput): string[] {
   const args = input.tool_input ?? {};
+
+  const direct: string[] = [];
   for (const key of ['file_path', 'notebook_path', 'path']) {
     const value = args[key];
-    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'string' && value.length > 0) direct.push(value);
   }
-  return null;
+  if (direct.length > 0) return direct;
+
+  // The field carrying an apply_patch body is an undocumented implementation
+  // detail, so scan every string value for the envelope rather than trusting
+  // one key name that could change between Codex releases.
+  const fromPatch: string[] = [];
+  for (const value of Object.values(args)) {
+    if (typeof value !== 'string' || !value.includes('*** ')) continue;
+    for (const match of value.matchAll(PATCH_FILE_LINE)) {
+      const path = match[1]?.trim();
+      if (path) fromPatch.push(path);
+    }
+  }
+  return fromPatch;
 }
 
 /**
@@ -186,8 +217,9 @@ export async function runHook(
       // Enforcement: only write-capable tools, and only when a path is present.
       const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
       if (event === 'PreToolUse' && WRITE_TOOLS.has(tool)) {
-        const path = targetPathOf(input);
-        if (path) {
+        // A single call can touch several files; one claimed path is enough
+        // to block the whole call, since patches apply atomically.
+        for (const path of targetPathsOf(input)) {
           const verdict = await client.request('check', { sessionId, path });
           if (verdict.ok && verdict.allowed === false && typeof verdict.reason === 'string') {
             return buildDenyOutput(event, verdict.reason);

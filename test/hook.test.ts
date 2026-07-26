@@ -160,3 +160,46 @@ test('buildDenyOutput does not emit systemMessage alongside the decision', () =>
   const out = buildDenyOutput('PreToolUse', 'blocked');
   assert.equal('systemMessage' in out, false);
 });
+
+import { targetPathsOf } from '../src/hook.ts';
+
+test('apply_patch is enforced — the Phase 3 spike proved Codex uses it', () => {
+  assert.ok(WRITE_TOOLS.has('apply_patch'));
+});
+
+test('targetPathsOf extracts every path from an apply_patch envelope', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: server/api/leads.ts',
+    '-old',
+    '+new',
+    '*** Add File: server/api/new.ts',
+    '*** Delete File: server/api/old.ts',
+    '*** End Patch',
+  ].join('\n');
+
+  const paths = targetPathsOf({ tool_name: 'apply_patch', tool_input: { input: patch } });
+  assert.deepEqual(paths, [
+    'server/api/leads.ts',
+    'server/api/new.ts',
+    'server/api/old.ts',
+  ]);
+});
+
+test('targetPathsOf finds the patch text under any field name', () => {
+  // The exact key Codex uses is an implementation detail, so every string
+  // field is scanned for the envelope rather than trusting one name.
+  const patch = '*** Begin Patch\n*** Update File: db/schema.sql\n*** End Patch';
+  assert.deepEqual(
+    targetPathsOf({ tool_name: 'apply_patch', tool_input: { patch } }),
+    ['db/schema.sql'],
+  );
+});
+
+test('targetPathsOf still handles ordinary single-path tools', () => {
+  assert.deepEqual(
+    targetPathsOf({ tool_name: 'Edit', tool_input: { file_path: '/repo/app/page.tsx' } }),
+    ['/repo/app/page.tsx'],
+  );
+  assert.deepEqual(targetPathsOf({ tool_name: 'Edit', tool_input: {} }), []);
+});

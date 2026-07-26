@@ -423,7 +423,9 @@ status quo.
 |---|---|
 | ~~Codex ignores deny decisions~~ | **RESOLVED 2026-07-26.** Codex hard-blocks using the same wire shape as Claude. No advisory fallback needed. See `spikes/codex-hook-capability/FINDINGS.md`. |
 | Deny silently fails open without `permissionDecisionReason` | Codex reports the hook `Failed` and runs the tool anyway. Always emit the reason; contract test asserts it. |
-| Codex `PreToolUse` fires for shell commands only | Non-shell edit paths (`apply_patch`) may bypass enforcement. Phase 3 must measure the gap and document it rather than overclaim coverage. |
+| ~~Codex `PreToolUse` fires for shell commands only~~ | **RESOLVED 2026-07-26.** Measured: `PreToolUse` fires for `apply_patch` too, and the deny is honored. Codex tried `apply_patch` twice, was blocked, fell back to a shell, was blocked again. Enforcement on Codex is hard and complete. See `spikes/codex-nonshell-enforcement/FINDINGS.md`. |
+| mesh skipped `apply_patch` in `WRITE_TOOLS` | **FIXED 2026-07-26**, found by the Phase 3 spike. The hook would have ignored Codex's primary edit path while appearing to enforce. `apply_patch` is now enforced and the patch envelope is parsed for every file it touches. |
+| Codex `PreToolUse` coverage is undocumented behavior | Measured on codex-cli 0.145.0, not promised by any spec. Re-run the Phase 3 spike after a major Codex upgrade; `mesh doctor` should surface the Codex version. |
 | Host hook schemas drift | Contract tests per host; `mesh doctor` reports the live capability matrix. |
 | ~~Hook startup cost too high~~ | **MEASURED in Phase 2.** 62ms p95 compiled, against a ~50ms Node floor. `npm run bench:hook` fails above 90ms. The original 30ms target was retired as unreachable. |
 | MCP server and hook may register the same session twice | The MCP server is not told the host's session id and falls back to `pid-<ppid>`. `mesh init` (Phase 5) must set `MESH_SESSION_ID` to the id the hook reports. |
