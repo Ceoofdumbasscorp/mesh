@@ -20,6 +20,15 @@ const shapes = {
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
     systemMessage: 'mesh spike: denied',
   },
+  // Minimal legal deny per the schema embedded in the codex binary: nothing
+  // but hookSpecificOutput, no sibling systemMessage.
+  denyMinimal: {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'mesh spike: denied',
+    },
+  },
   denyCursor: { permission: 'deny', user_message: 'mesh spike: denied' },
   denyBare: { decision: 'block', reason: 'mesh spike: denied' },
   injectClaude: {
@@ -43,6 +52,11 @@ function readStdinWithDeadline(ms) {
       done = true;
       clearTimeout(timer);
       process.stdin.removeAllListeners();
+      // pause() alone is not enough — an open stdin pipe keeps the event loop
+      // alive, so the process outlives its work and the host eventually times
+      // the hook out. destroy() releases it.
+      process.stdin.pause();
+      process.stdin.destroy();
       resolve(buffer);
     };
 
@@ -67,6 +81,8 @@ try {
   parsed = null;
 }
 
+const payload = JSON.stringify(shapes[MODE] ?? {});
+
 appendFileSync(
   LOG,
   JSON.stringify({
@@ -76,9 +92,11 @@ appendFileSync(
     tool: parsed?.tool_name ?? parsed?.toolName ?? '(none)',
     keys: parsed ? Object.keys(parsed) : [],
     rawLength: raw.length,
-    rawHead: raw.slice(0, 300),
+    emitted: payload,
   }) + '\n',
 );
 
-process.stdout.write(JSON.stringify(shapes[MODE] ?? {}));
-process.exit(0);
+// Exit only from the write callback. A bare process.exit() truncates unflushed
+// stdout; no exit at all risks lingering on a handle we did not close. The
+// callback fires once the payload has drained, which is the only correct moment.
+process.stdout.write(payload, () => process.exit(0));

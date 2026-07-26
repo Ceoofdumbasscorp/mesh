@@ -66,8 +66,8 @@ These were confirmed against the local install, not assumed.
 | Hooks enabled | yes (`settings.json` `hooks`) | yes (`[features] hooks = true`, `~/.codex/hooks.json`) |
 | Hook config schema | `{event: [{matcher, hooks:[...]}]}` | same shape |
 | `PreToolUse` fires | yes | yes (cmux ships `cmux-codex-hook-pre-tool-use.sh`) |
-| Inject via `additionalContext` | **yes, verified** | **unverified — spike required** |
-| Deny via `permissionDecision` | **yes, verified** | **unverified — spike required** |
+| Inject via `additionalContext` | **yes, verified** | **yes, verified** |
+| Deny via `permissionDecision` | **yes, verified** | **yes, verified** (reason required) |
 
 Evidence for the Claude column:
 
@@ -400,7 +400,9 @@ status quo.
 
 | Risk | Mitigation |
 |---|---|
-| Codex ignores deny decisions | Phase 0 spike. Falls back to advisory on Codex; Claude keeps hard blocking. |
+| ~~Codex ignores deny decisions~~ | **RESOLVED 2026-07-26.** Codex hard-blocks using the same wire shape as Claude. No advisory fallback needed. See `spikes/codex-hook-capability/FINDINGS.md`. |
+| Deny silently fails open without `permissionDecisionReason` | Codex reports the hook `Failed` and runs the tool anyway. Always emit the reason; contract test asserts it. |
+| Codex `PreToolUse` fires for shell commands only | Non-shell edit paths (`apply_patch`) may bypass enforcement. Phase 3 must measure the gap and document it rather than overclaim coverage. |
 | Host hook schemas drift | Contract tests per host; `mesh doctor` reports the live capability matrix. |
 | Hook startup cost too high | Fast path avoids IPC entirely; benchmark gates it; native shim available as a later optimization. |
 | Agents ignore the tools | Injected context is directive and `mesh init` adds a short usage note to the agent's instructions. |

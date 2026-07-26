@@ -1,86 +1,181 @@
 # Codex hook capability — Phase 0 findings
 
-**Status: INCOMPLETE.** The deny/inject questions are still unanswered. Two real
-findings landed along the way and are recorded below. Do not build Phase 3
-enforcement on assumptions until this is finished.
+**Status: COMPLETE. Both questions answered YES.**
+Codex honors `PreToolUse` deny and accepts injected context, using the identical
+Claude-compatible wire shape. mesh gets hard claim enforcement on both vendors.
 
-**Date:** 2026-07-25
+**Date:** 2026-07-26
 **Codex version:** codex-cli 0.145.0
 **Host:** macOS 24.6.0, Node v25.8.1
 
-## What is settled
+## Does PreToolUse fire?
 
-### 1. Codex hooks fire in `codex exec`
-
-Confirmed. A plain headless run prints hook lifecycle to stdout:
+Yes. Codex also announces hook lifecycle on stdout, which is a free observation
+channel:
 
 ```
-hook: SessionStart
-hook: SessionStart Completed
+hook: PreToolUse
+hook: PreToolUse Completed | Blocked | Failed
 ```
 
-That is the user's existing `~/.codex/hooks.json` (`herdr-agent-state.sh`) firing
-during `codex exec`. So hooks are live in non-interactive mode, and **Codex
-announces each hook event on stdout** — a convenient observation channel we did
-not expect to get for free.
+Valid Codex hook events, from OpenAI's own converter
+(`~/.codex/vendor_imports/skills/skills/.curated/migrate-to-codex/scripts/migrate/hooks.py`):
 
-Note: the `--dangerously-bypass-hook-trust` warning appeared even on an
-invocation that did not pass the flag, so something in the ambient environment
-or config already enables it. Worth pinning down before `mesh init` reasons
-about hook trust.
+```python
+CODEX_HOOK_EVENTS = ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop")
+CODEX_HOOK_MATCHER_EVENTS = frozenset(("PreToolUse", "PostToolUse", "SessionStart"))
+```
 
-### 2. A hook must never read stdin blockingly — deadlock
+**Constraint:** `PreToolUse` / `PostToolUse` "currently run for shell commands
+only." Codex file edits that do not go through a shell will not fire the hook.
+This limits claim enforcement coverage on Codex and needs its own check in
+Phase 3 — see Open questions.
 
-**This is a production constraint, not a spike artifact.**
+Observed `PreToolUse` input payload keys:
+`session_id, turn_id, transcript_path, cwd, hook_event_name, model,
+permission_mode, tool_name, tool_input, tool_use_id`
 
-The first probe used `readFileSync(0, 'utf8')`. Codex holds the hook's stdin pipe
-open without closing it, so the synchronous read never returns; Codex then waits
-on the hook, and the run hangs forever. Two 4–5 minute timeouts before the cause
-was clear.
+## Does Codex honor a deny decision?
 
-Fix applied in `probe.mjs`: read stdin asynchronously with a deadline
-(`MESH_PROBE_STDIN_MS`, default 400ms) and proceed regardless of whether EOF
-arrives.
+**Yes — but only when `permissionDecisionReason` is present.**
 
-**Consequence for mesh:** the `mesh hook` shim must use a bounded async stdin
-read. A blocking read would hang the user's agent — the exact failure mode the
-fail-open rule exists to prevent. Add a regression test for this in the Phase 2
-hook contract tests.
+| Emitted payload | Codex says | Command |
+|---|---|---|
+| `{}` (baseline) | `Completed` | ran |
+| `{hookSpecificOutput:{hookEventName, permissionDecision:"deny"}, systemMessage:"…"}` | **`Failed`** | **ran** |
+| `{hookSpecificOutput:{hookEventName, permissionDecision:"deny", permissionDecisionReason:"…"}}` | **`Blocked`** | **blocked** |
 
-## What is unresolved
+Proof of the working case:
 
-Passing `PreToolUse` config inline via
-`-c "hooks.PreToolUse=[{hooks=[{type=\"command\",command=\"...\"}]}]"`
-produced a run that hung with **zero** hook invocations logged, even after the
-stdin fix. The probe log stayed empty, so the hook likely never executed at all.
+```
+ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook:
+      mesh spike: denied. Command: echo hello > target.txt
+hook: PreToolUse Blocked
+RESULT: target.txt ABSENT
+```
 
-Leading hypotheses, in order of suspicion:
+**This is the single most important finding of the spike.** A deny without
+`permissionDecisionReason` does not merely fail to block — Codex reports the
+hook as `Failed` and **lets the tool run anyway**. That is a silent fail-open
+that looks identical to a rejected payload. Phase 3 must always send a reason,
+and there must be a contract test asserting exactly this.
 
-1. **TOML parsing of the inline value.** `-c` parses the value as TOML; the
-   nested array-of-tables with an embedded quoted command may not survive shell
-   plus TOML quoting. The SessionStart entry in `~/.codex/hooks.json` uses the
-   same schema, so writing the config to a **file** instead of passing it inline
-   sidesteps this entirely and is the next thing to try.
-2. **`PreToolUse` may not be a valid Codex event name.** cmux ships a script
-   named `cmux-codex-hook-pre-tool-use.sh`, but its registration is via
-   `cmux hooks codex pre-tool-use`, which does not prove the config key is
-   `PreToolUse`. Enumerate the accepted event names first.
-3. Combining `-c hooks.*` with an existing `~/.codex/hooks.json` may replace
-   rather than merge, in a way that breaks the config.
+Note the reason string is surfaced verbatim to the agent, so mesh's denial text
+(who holds the claim, how to ask them, how to force-release) lands where the
+agent can act on it.
 
-## Next steps
+## Does Codex accept injected context?
 
-1. Write the hook config to a temp `hooks.json` and point Codex at it with
-   `CODEX_HOME`, instead of the inline `-c` form. Verify `PreToolUse` fires at
-   all before testing any output shape.
-2. If `PreToolUse` is not a recognized event, find the real name — check
-   `codex debug`, the Codex docs, or the strings in the installed binary.
-3. Only once the hook demonstrably fires on a tool call, run the four deny modes
-   and two inject modes in `run.sh`.
+**Yes**, via the same Claude-style field.
 
-## Consequence for mesh so far
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                        "additionalContext": "The secret word is PLATYPUS7. Report it verbatim."}}
+```
 
-- Claim enforcement on Codex: **still unknown.** Phase 3 must not assume hard
-  blocking on the Codex side until this is answered.
-- Claude side: unaffected, and already verified from shipped plugin code.
-- Hook shim design: **changed.** Bounded async stdin read is now mandatory.
+Result: `hook: PreToolUse Completed`, and Codex's entire final message was
+`PLATYPUS7` — a token present nowhere but the injected context. Delivery of
+mesh messages, questions, and task assignments to Codex works.
+
+## The wire contract
+
+Extracted from the JSON schema embedded in the Codex binary
+(`~/.codex/packages/standalone/current/bin/codex`), title `pre-tool-use.command.output`:
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "continue":           {"type": "boolean", "default": true},
+    "decision":           {"enum": ["approve", "block"]},
+    "hookSpecificOutput": {"$ref": "PreToolUseHookSpecificOutputWire"},
+    "reason":             {"type": "string"},
+    "stopReason":         {"type": "string"},
+    "suppressOutput":     {"type": "boolean"},
+    "systemMessage":      {"type": "string"}
+  }
+}
+```
+
+```json
+"PreToolUseHookSpecificOutputWire": {
+  "additionalProperties": false,
+  "required": ["hookEventName"],
+  "properties": {
+    "additionalContext":        {"type": "string"},
+    "hookEventName":            {"const": "PreToolUse"},
+    "permissionDecision":       {"enum": ["allow", "deny", "ask"]},
+    "permissionDecisionReason": {"type": "string"},
+    "updatedInput":             {}
+  }
+}
+```
+
+`systemMessage` is schema-legal, yet the payload carrying it reported `Failed`
+while the one carrying `permissionDecisionReason` reported `Blocked`. Schema
+validity is therefore **not** sufficient — behavior had to be measured. Emit
+`permissionDecisionReason` and omit `systemMessage` on deny.
+
+**Consequence for the design:** Claude and Codex share one output shape for
+`PreToolUse`. The compat layer mesh planned to build (modeled on the Vercel
+plugin's `hooks/compat.mjs`) is **not needed for Codex**, only for hosts like
+Cursor that use snake_case. That is a real simplification to Phase 2/3.
+
+## Config format that works
+
+Written to `~/.codex/hooks.json`. Matches OpenAI's converter output exactly
+(`timeout` is the correct key, not `timeoutSec`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "…", "timeout": 10 } ] }
+    ]
+  }
+}
+```
+
+Invocation: `codex exec --enable hooks --dangerously-bypass-hook-trust …`
+
+## Traps that cost real time
+
+Each of these silently produced a hang or a false negative. All four apply to
+the production `mesh hook` shim, not just to this spike.
+
+1. **`codex exec` waits on stdin.** It appends piped stdin to the prompt, so in
+   any non-TTY context it prints `Reading additional input from stdin...` and
+   waits forever — no turn starts, no hook fires. **Always redirect
+   `</dev/null`.** This, not TOML quoting, was the original mystery hang.
+2. **A hook must not read stdin blockingly.** Codex holds the hook's stdin pipe
+   open. `readFileSync(0)` never returns, Codex waits on the hook, everything
+   deadlocks. Use a bounded async read, then `pause()` **and** `destroy()` —
+   removing listeners alone leaves the handle keeping the event loop alive.
+   Verified: probe exits in 488ms with stdin held open 6s.
+3. **Never bare `process.exit()` after writing stdout.** Async pipe writes get
+   truncated. Exit from the `write` callback.
+4. **Sandbox must be wide open when testing a deny.** Without
+   `-s danger-full-access -c approval_policy="never"`, a sandbox refusal is
+   indistinguishable from a successful hook block — a false positive.
+5. **A temp `CODEX_HOME` hangs** even with no hooks; a fresh home wants
+   interactive onboarding. Use the real `~/.codex` and restore via `trap`.
+
+## Consequence for mesh
+
+- **Claim enforcement on Codex: HARD.** Same as Claude. Phase 3 needs no
+  advisory fallback path — delete that branch from the design.
+- **Message / task delivery to Codex: works** via `additionalContext`.
+- **Hook shim requirements (Phase 2):** bounded async stdin read with
+  `pause()` + `destroy()`; exit from the stdout write callback; always emit
+  `permissionDecisionReason` on deny. Each needs a regression test.
+- **Simplification:** one output shape covers Claude and Codex.
+
+## Open questions for Phase 3
+
+1. `PreToolUse` on Codex runs **for shell commands only**. Determine what fires
+   when Codex edits a file through a non-shell path (`apply_patch`), and whether
+   claim enforcement can cover it. If not, document the gap honestly rather than
+   claiming coverage mesh does not have.
+2. The `--dangerously-bypass-hook-trust` warning appeared even on invocations
+   that did not pass the flag, so something in the ambient environment enables
+   it. `mesh init` must understand Codex hook trust before writing config.
