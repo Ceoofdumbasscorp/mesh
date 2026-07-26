@@ -16,6 +16,15 @@ export interface DaemonState {
  */
 export interface ConnectionContext {
   sessionId: string | null;
+  /**
+   * Whether this connection OWNS its agent's lifetime.
+   *
+   * Only an owning connection closing means the agent is gone. The MCP server
+   * holds one long-lived owning connection per session; the hook opens a
+   * transient connection on every tool call, and those must not evict the
+   * agent when they close.
+   */
+  owns: boolean;
   /** Set by the server so a client can ask the daemon to stop. */
   requestShutdown?: () => void;
 }
@@ -63,6 +72,10 @@ export function handleRequest(
       });
 
       ctx.sessionId = sessionId;
+      // Ownership is opt-in and sticky: a connection that ever claimed
+      // ownership keeps it, so a later non-owning register on the same
+      // connection cannot silently downgrade it.
+      if (req.own === true) ctx.owns = true;
       state.journal.append('register', {
         name: agent.name,
         sessionId,

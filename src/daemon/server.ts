@@ -94,6 +94,7 @@ export class MeshServer {
 
     const ctx: ConnectionContext = {
       sessionId: null,
+      owns: false,
       requestShutdown: () => {
         void this.close().then(() => this.#options.onShutdown?.());
       },
@@ -117,9 +118,10 @@ export class MeshServer {
 
     const cleanup = () => {
       if (!this.#connections.delete(socket)) return;
-      // A dropped connection is how we learn an agent is gone. This is the
-      // liveness signal the rest of the design depends on.
-      if (ctx.sessionId) {
+      // A dropped OWNING connection is how we learn an agent is gone. The
+      // hook connects and disconnects on every tool call, so treating any
+      // close as death would evict the agent constantly.
+      if (ctx.sessionId && ctx.owns) {
         const removed = this.#options.state.registry.unregister(ctx.sessionId);
         if (removed) {
           this.#options.state.journal.append('disconnect', {

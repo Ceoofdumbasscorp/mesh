@@ -16,6 +16,7 @@ Carried from Plan 1, plus Phase 2 additions. Every task inherits these.
 - **The hook shim must never import `@modelcontextprotocol/sdk` or `zod`.** Measured on this machine: bare `node` + `node:net` starts in **50–60ms**; adding the SDK import makes it **100ms**. The hook runs before every tool call, so it imports `node:net`, `node:fs`, and mesh's own dependency-free modules — nothing else. A test asserts this.
 - **Revised latency budget.** The spec's "p95 < 30ms" is unachievable: Node's own startup floor is ~50ms. The real budget is **p95 < 90ms total for the hook, of which mesh's own work is < 15ms**. Node startup dominates; a native shim is the only way below that, and it is out of scope. Update the spec accordingly (Task 9).
 - **Fail-open is absolute.** Any hook failure — daemon down, socket timeout, malformed input, unexpected throw — exits 0 having printed `{}`. The hook must never block or break the user's agent.
+- **Connection ownership.** `register` takes `own: true` to mark a connection as owning its agent's lifetime; only an owning connection closing unregisters the agent. The **MCP server sets it**; the **hook must not**, because it opens a fresh connection on every tool call and a non-owning close must leave the agent in place. This was found and fixed by regression test before Phase 2 began — without it, an agent would vanish from `mesh who` after its first tool call.
 - **Hook stdin discipline (Phase 0 findings).** Read stdin with a deadline, never blockingly; then `pause()` **and** `destroy()`. Exit only from the `process.stdout.write` callback. A bare `process.exit()` truncates unflushed output; a blocking read deadlocks the host. Both are regression-tested.
 - **Claude and Codex share one hook output shape** — verified in Phase 0. `{"hookSpecificOutput": {"hookEventName": "<event>", "additionalContext": "..."}}`. No per-host compat layer.
 - Message and task bodies capped at `MAX_BODY_BYTES` (4096), enforced on entry.
@@ -747,7 +748,7 @@ function setup() {
 }
 
 function ctx(): ConnectionContext {
-  return { sessionId: null };
+  return { sessionId: null, owns: false };
 }
 
 async function register(state: DaemonState, c: ConnectionContext, sessionId: string, provider: string, cwd: string) {
@@ -1198,7 +1199,7 @@ function setup() {
   return { base, state, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-const ctx = (): ConnectionContext => ({ sessionId: null });
+const ctx = (): ConnectionContext => ({ sessionId: null, owns: false });
 
 test('Waiters resolves a pending wait', async () => {
   const waiters = new Waiters();
@@ -2071,6 +2072,10 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     cwd: options.cwd,
     ...(options.role ? { role: options.role } : {}),
     pid: process.ppid,
+    // This connection owns the agent's lifetime: when the MCP server exits,
+    // the session is genuinely over. The hook deliberately does NOT set this,
+    // since it connects and disconnects on every tool call.
+    own: true,
   });
 
   const server = new McpServer({ name: 'mesh', version: '0.1.0' });
@@ -2279,8 +2284,8 @@ test('two clients complete a full ask round-trip over a real socket', async () =
     const codex = await MeshClient.open({ socketPath, autostart: false });
     assert.ok(claude && codex);
 
-    await claude.request('register', { sessionId: 'sa', provider: 'claude', cwd: base, role: 'frontend' });
-    await codex.request('register', { sessionId: 'sb', provider: 'codex', cwd: base, role: 'backend' });
+    await claude.request('register', { sessionId: 'sa', provider: 'claude', cwd: base, role: 'frontend', own: true });
+    await codex.request('register', { sessionId: 'sb', provider: 'codex', cwd: base, role: 'backend', own: true });
     await codex.request('touch', { activity: 'Edit server/api/leads.ts' });
 
     // claude-1 sees codex-1 and what it is doing.

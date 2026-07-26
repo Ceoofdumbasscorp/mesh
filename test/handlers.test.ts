@@ -17,7 +17,7 @@ function setup() {
     registry: new Registry({ clock: clock.now }),
     journal: new Journal(join(base, 'journal.jsonl'), clock.now),
   };
-  const ctx: ConnectionContext = { sessionId: null };
+  const ctx: ConnectionContext = { sessionId: null, owns: false };
   return { base, clock, state, ctx, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
@@ -89,7 +89,7 @@ test('who lists peers in the caller workspace with status', () => {
   try {
     const cwd = process.cwd();
     handleRequest(state, ctx, { id: 7, op: 'register', sessionId: 's1', provider: 'claude', cwd });
-    handleRequest(state, { sessionId: null }, {
+    handleRequest(state, { sessionId: null, owns: false }, {
       id: 8, op: 'register', sessionId: 's2', provider: 'codex', cwd, role: 'backend',
     });
 

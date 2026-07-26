@@ -135,7 +135,35 @@ test('two clients registered on one workspace see each other', async () => {
   }
 });
 
-test('closing a connection unregisters its agent', async () => {
+test('a transient connection closing does NOT unregister the agent', async () => {
+  const base = scratch();
+  const socketPath = join(base, 'mesh.sock');
+  const server = new MeshServer({ socketPath, state: makeState(base) });
+  await server.start();
+
+  const owner = rawClient(socketPath);
+  const hook = rawClient(socketPath);
+  await Promise.all([owner.ready, hook.ready]);
+
+  try {
+    // The MCP server: one long-lived owning connection per session.
+    await owner.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base, own: true });
+    // A hook firing: connect, report, disconnect — on every single tool call.
+    await hook.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base });
+    await hook.close();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const who = await owner.request({ id: 2, op: 'who', cwd: base });
+    const agents = who.agents as Array<Record<string, unknown>>;
+    assert.deepEqual(agents.map((x) => x.name), ['claude-1'], 'the agent survives its hook disconnecting');
+  } finally {
+    await owner.close();
+    await server.close();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('closing an owning connection unregisters its agent', async () => {
   const base = scratch();
   const socketPath = join(base, 'mesh.sock');
   const server = new MeshServer({ socketPath, state: makeState(base) });
@@ -146,8 +174,8 @@ test('closing a connection unregisters its agent', async () => {
   await Promise.all([a.ready, b.ready]);
 
   try {
-    await a.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base });
-    await b.request({ id: 1, op: 'register', sessionId: 'sb', provider: 'codex', cwd: base });
+    await a.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base, own: true });
+    await b.request({ id: 1, op: 'register', sessionId: 'sb', provider: 'codex', cwd: base, own: true });
 
     await a.close();
     // Give the server's close handler a turn to run.
