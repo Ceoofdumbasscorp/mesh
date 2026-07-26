@@ -12,6 +12,7 @@ Usage:
   mesh doctor     Report daemon, runtime, and hook installation status
   mesh log        Print the daemon journal
   mesh hook <ev>  Internal: called by Claude/Codex hooks, not by hand
+  mesh mcp        Internal: MCP server exposing mesh_* tools to an agent
   mesh daemon     Run the daemon in the foreground (normally automatic)
 `;
 
@@ -75,6 +76,13 @@ export async function main(argv: string[]): Promise<number> {
       return cmdLog();
     case 'hook':
       return cmdHook(argv[3]);
+    case 'mcp': {
+      // Dynamic import on purpose: it keeps the MCP SDK out of the module
+      // graph for every other subcommand, above all `mesh hook`.
+      const { resolveMcpIdentity, startMcpServer } = await import('../mcp/server.ts');
+      await startMcpServer(resolveMcpIdentity(process.env, argv));
+      return 0;
+    }
     case 'daemon':
       await import('../daemon/main.ts');
       return 0;
