@@ -11,7 +11,8 @@ import { AskRegistry } from '../src/asks.ts';
 import { ClaimTable } from '../src/claims.ts';
 import { Waiters } from '../src/daemon/waiters.ts';
 import { MeshServer } from '../src/daemon/server.ts';
-import { MeshClient } from '../src/client.ts';
+import { MeshClient, daemonEntryPoint } from '../src/client.ts';
+import { pathToFileURL } from 'node:url';
 import type { DaemonState } from '../src/daemon/handlers.ts';
 
 function scratch(): string {
@@ -152,4 +153,17 @@ test('requests after close are rejected rather than hanging', async () => {
     await server.close();
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test('daemonEntryPoint matches the extension it is itself running as', () => {
+  // From src/ the daemon is main.ts; from dist/ it is main.js. Getting this
+  // wrong made the compiled package unable to start its daemon at all.
+  assert.equal(
+    daemonEntryPoint(pathToFileURL('/pkg/src/client.ts').href),
+    '/pkg/src/daemon/main.ts',
+  );
+  assert.equal(
+    daemonEntryPoint(pathToFileURL('/pkg/dist/client.js').href),
+    '/pkg/dist/daemon/main.js',
+  );
 });

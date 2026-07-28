@@ -36,8 +36,19 @@ function tryConnect(socketPath: string, timeoutMs: number): Promise<Socket | nul
   });
 }
 
-function daemonEntryPoint(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), 'daemon', 'main.ts');
+/**
+ * The daemon module to spawn, matching how THIS module is running.
+ *
+ * Hardcoding `main.ts` shipped a package that could not start its own daemon:
+ * from dist/ it resolved to dist/daemon/main.ts, which does not exist. The
+ * spawn is detached with stdio ignored, so nothing surfaced except a later
+ * "could not reach or start the daemon" — and every test ran from src/, where
+ * the .ts file does exist, so the suite stayed green.
+ */
+export function daemonEntryPoint(moduleUrl: string = import.meta.url): string {
+  const here = fileURLToPath(moduleUrl);
+  const extension = here.endsWith('.ts') ? 'ts' : 'js';
+  return join(dirname(here), 'daemon', `main.${extension}`);
 }
 
 /**
