@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { testClock } from '../src/clock.ts';
-import { Registry } from '../src/registry.ts';
+import { Registry, isProvisionalSessionId } from '../src/registry.ts';
 import type { Workspace } from '../src/workspace.ts';
 
 const wsA: Workspace = { root: '/repo/a', label: 'a', key: 'aaaaaaaaaaaa' };
@@ -126,4 +126,87 @@ test('list is sorted by registration order for stable output', () => {
   registry.register({ sessionId: 's2', provider: 'alpha', workspace: wsA });
 
   assert.deepEqual(registry.list(wsA.root).map((a) => a.name), ['zeta-1', 'alpha-1']);
+});
+
+test('isProvisionalSessionId recognizes only the pid fallback', () => {
+  assert.equal(isProvisionalSessionId('pid-4821'), true);
+  assert.equal(isProvisionalSessionId('c7cbb924-dffb-4045-b06f-e6099345f69e'), false);
+  assert.equal(isProvisionalSessionId('pid-'), false);
+  assert.equal(isProvisionalSessionId('pid-abc'), false);
+});
+
+test('a real session id adopts the agent an MCP server registered provisionally', () => {
+  const { registry } = setup();
+
+  // The MCP server starts first and has no id from its host.
+  const provisional = registry.register({
+    sessionId: 'pid-500', provider: 'codex', workspace: wsA, pid: 500,
+  });
+  // Then the hook fires, carrying the host's real session id.
+  const real = registry.register({
+    sessionId: '019fa0a8-8039-70c3', provider: 'codex', workspace: wsA, pid: 500,
+  });
+
+  assert.equal(real.name, provisional.name, 'the same agent, so claims and mail survive');
+  assert.equal(registry.list(wsA.root).length, 1, 'one session is one agent');
+  assert.equal(real.sessionId, '019fa0a8-8039-70c3', 'the real id wins');
+});
+
+test('the provisional id keeps working after the real id takes over', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'pid-500', provider: 'codex', workspace: wsA, pid: 500 });
+  registry.register({ sessionId: 'real-1', provider: 'codex', workspace: wsA, pid: 500 });
+
+  // The MCP server's connection still knows itself only as pid-500. Its close
+  // is our liveness signal, so it MUST still be able to unregister the agent.
+  assert.equal(registry.get('pid-500')?.sessionId, 'real-1');
+  assert.equal(registry.touch('pid-500', 'Edit app.ts'), true);
+  assert.equal(registry.get('real-1')?.activity, 'Edit app.ts');
+  assert.equal(registry.unregister('pid-500')?.sessionId, 'real-1');
+  assert.equal(registry.list(wsA.root).length, 0);
+});
+
+test('a provisional register after a real one adopts the live agent', () => {
+  const { registry } = setup();
+  const real = registry.register({
+    sessionId: 'real-1', provider: 'claude', workspace: wsA, pid: 700,
+  });
+  const later = registry.register({
+    sessionId: 'pid-700', provider: 'claude', workspace: wsA, pid: 700,
+  });
+
+  assert.equal(later.name, real.name);
+  assert.equal(registry.list(wsA.root).length, 1);
+  assert.equal(registry.get('pid-700')?.sessionId, 'real-1');
+});
+
+test('two real sessions sharing a pid stay separate agents', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'real-1', provider: 'claude', workspace: wsA, pid: 900 });
+  registry.register({ sessionId: 'real-2', provider: 'claude', workspace: wsA, pid: 900 });
+
+  assert.equal(registry.list(wsA.root).length, 2, 'merging is only ever a provisional-to-real move');
+});
+
+test('agents in different workspaces never merge, whatever their pids', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'pid-500', provider: 'claude', workspace: wsA, pid: 500 });
+  registry.register({ sessionId: 'real-1', provider: 'claude', workspace: wsB, pid: 500 });
+
+  assert.equal(registry.list(wsA.root).length, 1);
+  assert.equal(registry.list(wsB.root).length, 1);
+});
+
+test('a merge does not free the agent name for reuse', () => {
+  const { registry } = setup();
+  const first = registry.register({
+    sessionId: 'pid-500', provider: 'claude', workspace: wsA, pid: 500,
+  });
+  registry.register({ sessionId: 'real-1', provider: 'claude', workspace: wsA, pid: 500 });
+  const second = registry.register({
+    sessionId: 'other', provider: 'claude', workspace: wsA, pid: 600,
+  });
+
+  assert.equal(first.name, 'claude-1');
+  assert.equal(second.name, 'claude-2', 'the merged agent still holds claude-1');
 });
