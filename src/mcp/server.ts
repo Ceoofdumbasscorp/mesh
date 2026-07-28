@@ -13,19 +13,44 @@ export interface McpOptions {
 }
 
 /**
- * The MCP server is spawned by the host and is not told the host's session id,
- * so it takes one from --session or MESH_SESSION_ID. `mesh init` (Phase 5)
- * will set that to the same id the hook reports; until then the pid fallback
- * can register a second agent for one session.
+ * Where a session id comes from, in order of trust:
+ *
+ *   1. `--session <id>`        explicit; wins over everything
+ *   2. MESH_SESSION_ID         the operator's escape hatch
+ *   3. CLAUDE_CODE_SESSION_ID  measured 2026-07-27: Claude Code exports this to
+ *                              its MCP servers, interactive and `-p` alike, and
+ *                              it equals the session_id the hook receives.
+ *   4. `pid-<ppid>`            provisional. Codex passes no session id at all —
+ *                              it scrubs the environment it gives an MCP server
+ *                              — so this is the normal Codex path. The daemon
+ *                              reconciles it with the hook's real id by
+ *                              (workspace, host pid), which is the same number
+ *                              on both sides. See
+ *                              spikes/session-identity/FINDINGS.md.
+ *
+ * The host variable is read ONLY under Claude: a Codex session launched from a
+ * Claude session inherits CLAUDE_CODE_SESSION_ID, and trusting it there would
+ * merge two different agents into one.
  */
-export function resolveMcpIdentity(env: NodeJS.ProcessEnv, argv: string[]): McpOptions {
+export function resolveMcpIdentity(
+  env: NodeJS.ProcessEnv,
+  argv: string[],
+  ppid: number = process.ppid,
+): McpOptions {
   const flagIndex = argv.indexOf('--session');
   const fromFlag = flagIndex === -1 ? undefined : argv[flagIndex + 1];
+  const provider = env.MESH_PROVIDER ?? 'claude';
+  const isClaude = provider === 'claude';
   const role = env.MESH_ROLE;
+
   return {
-    sessionId: fromFlag ?? env.MESH_SESSION_ID ?? `pid-${process.ppid}`,
-    provider: env.MESH_PROVIDER ?? 'claude',
-    cwd: env.MESH_CWD ?? process.cwd(),
+    sessionId:
+      fromFlag ??
+      env.MESH_SESSION_ID ??
+      (isClaude ? env.CLAUDE_CODE_SESSION_ID : undefined) ??
+      `pid-${ppid}`,
+    provider,
+    cwd: env.MESH_CWD ?? (isClaude ? env.CLAUDE_PROJECT_DIR : undefined) ?? process.cwd(),
     ...(role ? { role } : {}),
   };
 }
