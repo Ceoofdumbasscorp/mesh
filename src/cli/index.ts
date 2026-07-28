@@ -11,6 +11,7 @@ import { runWatch, DEFAULT_INTERVAL_MS } from './watch.ts';
 const USAGE = `mesh — cross-agent collaboration for terminal coding agents
 
 Usage:
+  mesh init       Wire mesh into Claude Code and Codex (--dry-run to preview)
   mesh who        List the agents working in this workspace
   mesh claims     Show which agent has claimed which paths
   mesh watch      Live view of agents, questions, and claims
@@ -51,6 +52,32 @@ async function cmdWho(): Promise<number> {
 async function cmdDoctor(): Promise<number> {
   process.stdout.write(`${renderDoctor(await collectDoctorReport())}\n`);
   return 0;
+}
+
+async function cmdInit(args: string[]): Promise<number> {
+  const { runInit, renderInitSummary } = await import('./init.ts');
+  const { requireBuiltEntryPoint } = await import('../install/entry.ts');
+  const { defaultRunner } = await import('../install/mcp.ts');
+  const { homedir } = await import('node:os');
+
+  try {
+    const entry = requireBuiltEntryPoint();
+    const result = runInit({
+      home: homedir(),
+      // The node that ran init, by absolute path: a hook's PATH is not the
+      // shell's, and a bare `node` there is a coin flip.
+      nodePath: process.execPath,
+      entry,
+      now: Date.now(),
+      dryRun: args.includes('--dry-run'),
+      runner: defaultRunner,
+    });
+    process.stdout.write(`${renderInitSummary(result)}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${(error as Error).message}\n`);
+    return 1;
+  }
 }
 
 async function cmdLog(): Promise<number> {
@@ -145,6 +172,8 @@ export async function main(argv: string[]): Promise<number> {
   switch (command) {
     case 'who':
       return cmdWho();
+    case 'init':
+      return cmdInit(argv.slice(3));
     case 'doctor':
       return cmdDoctor();
     case 'log':
