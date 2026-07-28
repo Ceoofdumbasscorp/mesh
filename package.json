@@ -8,12 +8,17 @@
     "node": ">=22.6"
   },
   "bin": {
-    "mesh": "./src/cli/index.ts"
+    "mesh": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "bench:hook": "node scripts/bench-hook.mjs"
   },
   "devDependencies": {
