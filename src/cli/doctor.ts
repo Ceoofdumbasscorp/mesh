@@ -3,6 +3,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { meshPaths } from '../paths.ts';
 import { MeshClient } from '../client.ts';
+import { distEntryPoint } from '../install/entry.ts';
+import { codexHookTrustRecorded, codexPaths } from '../install/codex.ts';
+import { defaultRunner } from '../install/mcp.ts';
+import type { CommandRunner } from '../install/mcp.ts';
 
 export interface DoctorReport {
   nodeVersion: string;
@@ -12,6 +16,12 @@ export interface DoctorReport {
   claudeHooksInstalled: boolean;
   codexHooksInstalled: boolean;
   codexSpikeRecorded: boolean;
+  distBuilt: boolean;
+  distPath: string;
+  claudeMcpRegistered: boolean;
+  codexMcpRegistered: boolean;
+  codexHooksTrusted: boolean;
+  codexVersion: string | null;
 }
 
 function nodeMeetsFloor(version: string): boolean {
@@ -22,31 +32,65 @@ function nodeMeetsFloor(version: string): boolean {
   return major > 22 || (major === 22 && minor >= 6);
 }
 
-function fileMentionsMesh(path: string): boolean {
+/**
+ * Whether a config file points at THIS entry point.
+ *
+ * The old check looked for the literal string "mesh hook", which a real
+ * install never writes — `mesh init` writes an absolute path to
+ * dist/cli/index.js — so it reported a correct install as missing.
+ */
+function fileMentions(path: string, needle: string): boolean {
   if (!existsSync(path)) return false;
   try {
-    return readFileSync(path, 'utf8').includes('mesh hook');
+    return readFileSync(path, 'utf8').includes(needle);
   } catch {
     return false;
   }
 }
 
-export async function collectDoctorReport(): Promise<DoctorReport> {
+function mcpRegistered(host: string, runner: CommandRunner): boolean {
+  const listed = runner(host, ['mcp', 'list']);
+  return listed.status === 0 && /(^|\W)mesh(\W|$)/m.test(listed.stdout);
+}
+
+function hostVersion(host: string, runner: CommandRunner): string | null {
+  const result = runner(host, ['--version']);
+  if (result.status !== 0) return null;
+  const line = result.stdout.trim().split('\n')[0];
+  return line && line.length > 0 ? line : null;
+}
+
+export async function collectDoctorReport(
+  runner: CommandRunner = defaultRunner,
+): Promise<DoctorReport> {
   const paths = meshPaths();
   const client = await MeshClient.open({ autostart: false, connectTimeoutMs: 500 });
   const daemonReachable = client !== null;
   client?.close();
+
+  const entry = distEntryPoint();
+  const home = homedir();
+  const codex = codexPaths(home);
+  const codexConfig = existsSync(codex.config) ? readFileSync(codex.config, 'utf8') : '';
 
   return {
     nodeVersion: process.version,
     nodeOk: nodeMeetsFloor(process.version),
     daemonReachable,
     socketPath: paths.socket,
-    claudeHooksInstalled: fileMentionsMesh(join(homedir(), '.claude', 'settings.json')),
-    codexHooksInstalled: fileMentionsMesh(join(homedir(), '.codex', 'hooks.json')),
+    claudeHooksInstalled: fileMentions(join(home, '.claude', 'settings.json'), entry),
+    codexHooksInstalled: fileMentions(codex.hooks, entry),
     codexSpikeRecorded: existsSync(
-      join(homedir(), 'Projects', 'mesh', 'spikes', 'codex-hook-capability', 'FINDINGS.md'),
+      join(home, 'Projects', 'mesh', 'spikes', 'codex-hook-capability', 'FINDINGS.md'),
     ),
+    distBuilt: existsSync(entry),
+    distPath: entry,
+    claudeMcpRegistered: mcpRegistered('claude', runner),
+    codexMcpRegistered: mcpRegistered('codex', runner),
+    codexHooksTrusted: codexHookTrustRecorded(codexConfig, codex.hooks),
+    // Codex hook behavior is measured, not promised: a version bump is a
+    // reason to re-run the spikes.
+    codexVersion: hostVersion('codex', runner),
   };
 }
 
@@ -57,6 +101,12 @@ export function renderDoctor(report: DoctorReport): string {
     report.nodeOk
       ? `  node             ok        ${report.nodeVersion}`
       : `  node             PROBLEM   ${report.nodeVersion} — mesh requires >= 22.6 for type stripping`,
+  );
+
+  lines.push(
+    report.distBuilt
+      ? `  build            ok        ${report.distPath}`
+      : `  build            PROBLEM   ${report.distPath} missing — run \`npm run build\`, or hooks cost ~40ms more per tool call`,
   );
 
   lines.push(
@@ -72,9 +122,33 @@ export function renderDoctor(report: DoctorReport): string {
   );
 
   lines.push(
+    report.claudeMcpRegistered
+      ? '  claude mcp       ok        mesh is registered'
+      : '  claude mcp       not registered — run `mesh init`',
+  );
+
+  lines.push(
     report.codexHooksInstalled
       ? '  codex hooks      ok        installed in ~/.codex/hooks.json'
       : '  codex hooks      not installed — run `mesh init` to wire them up',
+  );
+
+  lines.push(
+    report.codexMcpRegistered
+      ? '  codex mcp        ok        mesh is registered'
+      : '  codex mcp        not registered — run `mesh init`',
+  );
+
+  lines.push(
+    report.codexHooksTrusted
+      ? '  codex trust      ok        the hook is approved'
+      : '  codex trust      PENDING   Codex asks once on next launch; until then it runs no hooks and mesh cannot enforce claims',
+  );
+
+  lines.push(
+    report.codexVersion
+      ? `  codex version    ${report.codexVersion} — hook behavior is measured per version, see spikes/`
+      : '  codex version    unknown — codex is not on PATH',
   );
 
   lines.push(

@@ -43,6 +43,12 @@ test('renderDoctor reports a healthy environment', () => {
     claudeHooksInstalled: true,
     codexHooksInstalled: true,
     codexSpikeRecorded: true,
+    distBuilt: true,
+    distPath: '/pkg/dist/cli/index.js',
+    claudeMcpRegistered: true,
+    codexMcpRegistered: true,
+    codexHooksTrusted: true,
+    codexVersion: 'codex-cli 0.145.0',
   });
 
   assert.match(out, /v25\.8\.1/);
@@ -59,6 +65,12 @@ test('renderDoctor flags each problem it finds', () => {
     claudeHooksInstalled: false,
     codexHooksInstalled: false,
     codexSpikeRecorded: false,
+    distBuilt: false,
+    distPath: '/pkg/dist/cli/index.js',
+    claudeMcpRegistered: false,
+    codexMcpRegistered: false,
+    codexHooksTrusted: false,
+    codexVersion: null,
   });
 
   assert.match(out, /22\.6/, 'states the required version');
@@ -97,4 +109,46 @@ test('renderClaims flags a claim that is nearly expired', () => {
     { id: 1, holder: 'codex-1', patterns: ['server/**'], mode: 'exclusive', expiresInMs: 5_000 },
   ]);
   assert.match(out, /expiring/i);
+});
+
+const healthyReport = {
+  nodeVersion: 'v25.8.1',
+  nodeOk: true,
+  daemonReachable: true,
+  socketPath: '/s',
+  claudeHooksInstalled: true,
+  codexHooksInstalled: true,
+  codexSpikeRecorded: true,
+  distBuilt: true,
+  distPath: '/pkg/dist/cli/index.js',
+  claudeMcpRegistered: true,
+  codexMcpRegistered: true,
+  codexHooksTrusted: true,
+  codexVersion: 'codex-cli 0.145.0',
+};
+
+test('renderDoctor flags an unbuilt dist, which makes every tool call slower', () => {
+  const out = renderDoctor({ ...healthyReport, distBuilt: false });
+  assert.match(out, /npm run build/);
+});
+
+test('renderDoctor flags a Codex hook the user has not trusted yet', () => {
+  const out = renderDoctor({ ...healthyReport, codexHooksTrusted: false });
+  assert.match(out, /trust/i);
+  assert.match(out, /enforce/i, 'says what is lost until it is trusted');
+});
+
+test('renderDoctor reports the Codex version, since hook behavior is version-measured', () => {
+  assert.match(renderDoctor(healthyReport), /0\.145\.0/);
+});
+
+test('renderDoctor names mesh init when the MCP server is not registered', () => {
+  const out = renderDoctor({
+    ...healthyReport,
+    claudeMcpRegistered: false,
+    codexMcpRegistered: false,
+    codexVersion: null,
+  });
+  assert.match(out, /mcp/i);
+  assert.match(out, /mesh init/);
 });

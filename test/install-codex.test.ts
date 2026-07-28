@@ -53,15 +53,20 @@ test('ensureCodexHooksFeature handles an empty config', () => {
   assert.match(text, /\[features\]\nhooks = true/);
 });
 
-test('codexHookTrustRecorded finds an approval for our hooks file', () => {
-  const toml = [
-    '[hooks.state."/home/k/.codex/hooks.json:session_start:0:0"]',
-    'trusted_hash = "sha256:abc"',
-    '',
-  ].join('\n');
-  assert.equal(codexHookTrustRecorded(toml, '/home/k/.codex/hooks.json'), true);
-  assert.equal(codexHookTrustRecorded(toml, '/other/hooks.json'), false);
-  assert.equal(codexHookTrustRecorded('', '/home/k/.codex/hooks.json'), false);
+test('codexHookTrustRecorded requires approval for every event mesh installs', () => {
+  const path = '/home/k/.codex/hooks.json';
+  const trust = (event: string) =>
+    `[hooks.state."${path}:${event}:0:0"]\ntrusted_hash = "sha256:abc"\n`;
+
+  assert.equal(
+    codexHookTrustRecorded(`${trust('session_start')}${trust('pre_tool_use')}`, path),
+    true,
+  );
+  // A machine whose hooks.json holds only another tool's SessionStart hook
+  // must not report mesh's PreToolUse enforcement hook as approved.
+  assert.equal(codexHookTrustRecorded(trust('session_start'), path), false);
+  assert.equal(codexHookTrustRecorded(trust('pre_tool_use'), '/other/hooks.json'), false);
+  assert.equal(codexHookTrustRecorded('', path), false);
 });
 
 test('planCodexInstall reports absent when Codex is not installed', () => {

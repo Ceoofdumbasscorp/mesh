@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backupFile, backupStamp, writeFileAtomic } from './backup.ts';
-import { withMeshHooks } from './hooks.ts';
+import { MESH_HOOK_EVENTS, withMeshHooks } from './hooks.ts';
 import type { HookConfig } from './hooks.ts';
 import { withMeshNote } from './note.ts';
 
@@ -73,15 +73,28 @@ export function ensureCodexHooksFeature(toml: string): { text: string; changed: 
   };
 }
 
+/** `PreToolUse` → `pre_tool_use`, matching how Codex keys its trust state. */
+function snakeEvent(event: string): string {
+  return event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
 /**
- * Whether Codex has recorded the user's approval of this hooks file.
+ * Whether Codex has recorded approval for the events mesh installs.
  *
- * Codex stores it as `[hooks.state."<path>:<event>:<i>:<j>"] trusted_hash`.
+ * Codex stores it as `[hooks.state."<path>:<event>:<i>:<j>"] trusted_hash`,
+ * where the hash covers the hook entry itself. mesh cannot compute that hash,
+ * so it cannot prove the trusted entry is *its* hook — but it can at least
+ * scope the question to the events it installs. Matching the file alone gave a
+ * false "approved" on a machine whose hooks.json held only an unrelated
+ * SessionStart hook from another tool.
+ *
  * mesh only ever READS this: approving a hook is the user's decision, and
- * forging the entry would be mesh silently granting itself execution rights.
+ * writing the entry would be mesh silently granting itself execution rights.
  */
 export function codexHookTrustRecorded(toml: string, hooksPath: string): boolean {
-  return toml.includes(`[hooks.state."${hooksPath}:`);
+  return MESH_HOOK_EVENTS.every((event) =>
+    toml.includes(`[hooks.state."${hooksPath}:${snakeEvent(event)}:`),
+  );
 }
 
 export function planCodexInstall(input: CodexInstallInput): CodexInstallPlan {
