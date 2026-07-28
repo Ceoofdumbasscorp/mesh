@@ -2,7 +2,8 @@
 
 Read this first after a `/clear`. Everything below is verified, not aspirational.
 
-**Repo:** `~/Projects/mesh` · **Branch:** `phase-0-1-daemon` · **208 tests passing**, typecheck clean.
+**Repo:** `~/Projects/mesh` · **Branch:** `phase-0-1-daemon` · **293 tests passing**, typecheck clean,
+hook 64ms p95 compiled.
 
 ## What mesh is
 
@@ -36,7 +37,7 @@ been abandoned.
 - **2 — Mailbox, blocking ask, MCP server, hook shim** ✅
 - **3 — Claims, glob matching, hard enforcement** ✅
 - **4 — Task delegation** (`mesh_assign`, `mesh board`) — spec'd, **not built**
-- **5 — `mesh init`, `mesh watch`, README** — **not built. This is what makes it usable daily.**
+- **5 — `mesh init`, `mesh watch`, README** ✅ `docs/superpowers/plans/2026-07-27-mesh-phase-5-product-surface.md`
 
 ## Documents, in reading order
 
@@ -76,18 +77,55 @@ been abandoned.
 - Glob intersection is conservative: overlapping unless *provably* disjoint.
 - The hook never autostarts the daemon. The MCP server owns daemon startup.
 
-## Phase 5's two known jobs
+## Resolved in Phase 5
 
-1. **Point hooks at `dist/`, not `src/`** — worth 40ms on every tool call.
-2. **Fix double registration.** The MCP server isn't told the host's session id and falls back to
-   `pid-<ppid>`, so one agent can register twice.
+1. **Hooks point at `dist/`.** `mesh init` writes the compiled entry point and refuses to run if
+   `dist/` is missing. `package.json` `bin` and `files` ship compiled, and `prepare` builds on
+   install.
+2. **Double registration is fixed, and this file's previous premise was wrong.**
+   **Measured 2026-07-27** (`spikes/session-identity/FINDINGS.md`, reproduce with its `run.sh`):
+   Claude Code **does** export `CLAUDE_CODE_SESSION_ID` to its MCP servers, equal to the hook's
+   `session_id`. Codex exports nothing and scrubs the MCP server's environment entirely. On both
+   hosts the hook and the MCP server share a ppid — the host process — so the daemon reconciles a
+   provisional `pid-<n>` id with the real one by `(workspaceRoot, pid)`. The per-pid-file option
+   was dropped; it is unnecessary.
 
-   **Measured 2026-07-26:** Claude Code passes **no** session-id environment variable to MCP
-   servers — a live server's environment had zero `CLAUDE_*` / `SESSION_*` / `MCP_*` vars. So
-   `MESH_SESSION_ID` cannot simply be read from the environment. Remaining options, in order of
-   promise: reconcile daemon-side by `(workspaceRoot, pid)` once the ppid relationship between the
-   hook and the MCP server is measured; or have the `SessionStart` hook write the session id to a
-   per-pid file the MCP server reads. **Measure the ppid relationship first** — that decides it.
+   **Trap:** a Codex session launched from a Claude session inherits `CLAUDE_CODE_SESSION_ID`. It
+   is only trusted when the provider is Claude.
+
+   Verified live on both hosts: Claude registers once under its real id; Codex registers twice
+   (`pid-55468` from the MCP server, a UUIDv7 from the hook) and the daemon merges them into one
+   `codex-1`.
+
+## More hard-won facts
+
+- **The compiled package could not start its own daemon.** `client.ts` hardcoded `daemon/main.ts`,
+  which from `dist/` resolves to a file that does not exist. The spawn is detached with stdio
+  ignored, so it failed silently and surfaced only as `mesh: could not reach or start the daemon`.
+  Every test ran from `src/`, where the `.ts` file exists, so the suite stayed green while the
+  shipped artifact was dead. `daemonEntryPoint()` now matches its own extension, and
+  `test/package.test.ts` asks the **compiled** client what it would spawn.
+- **`mesh doctor` must look for the entry point it actually writes.** It used to grep for the
+  literal string `mesh hook`, which a real install never writes, so a correct install reported as
+  missing.
+- **Codex hook trust is per event.** `[hooks.state."<hooks.json>:<event>:<i>:<j>"]` carries a
+  `trusted_hash` mesh cannot compute, so mesh only reads it — and must scope the check to the
+  events it installs. Matching the file alone reported another tool's trusted `SessionStart` hook
+  as mesh's approval.
+- **Codex session ids are opaque.** Usually a UUIDv7, but one run reported a slug
+  (`codex-mesh-who-once`). mesh treats the id as an opaque string and must keep doing so.
+
+## Open for Phase 6
+
+- **Codex hook trust is a manual step.** `mesh init` cannot approve its own hook; Codex prompts
+  once on next launch and `mesh doctor` reports the state. Anyone testing enforcement on Codex must
+  approve it first, or hooks silently do not run.
+- **MCP tools for claims are still not exposed.** `mesh_claim` / `mesh_release` have daemon ops and
+  CLI commands but no tool surface, so an agent cannot yet claim a path itself. Phase 6 needs this
+  before a real cross-vendor run.
+- **Phase 4 (task delegation) remains unbuilt** — spec'd in
+  `docs/superpowers/specs/2026-07-25-mesh-design.md`, no plan written. `mesh board` / `mesh assign`
+  belong to it, not to Phase 5.
 
 ## Resuming
 
@@ -96,5 +134,6 @@ cd ~/Projects/mesh
 npm test && npm run typecheck && npm run build && npm run bench:hook
 ```
 
-Then write the Phase 5 plan (`superpowers:writing-plans`) and execute it. The three existing plans
-in `docs/superpowers/plans/` are the format to follow.
+`mesh init` has **not** been run against this machine's real `~/.claude` / `~/.codex` yet — Phase 5
+was verified with per-invocation config instead (`--settings` / `--mcp-config` for Claude, `-c` for
+Codex), so nothing global was modified. Run `node dist/cli/index.js init --dry-run` first.
