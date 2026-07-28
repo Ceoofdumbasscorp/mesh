@@ -6,12 +6,15 @@ import { collectDoctorReport, renderDoctor } from './doctor.ts';
 import { runHook } from '../hook.ts';
 import { renderClaims } from './claims.ts';
 import type { ClaimRow } from './claims.ts';
+import { runWatch, DEFAULT_INTERVAL_MS } from './watch.ts';
 
 const USAGE = `mesh — cross-agent collaboration for terminal coding agents
 
 Usage:
   mesh who        List the agents working in this workspace
   mesh claims     Show which agent has claimed which paths
+  mesh watch      Live view of agents, questions, and claims
+                  (--once, --interval <ms>)
   mesh release [--force] <pattern>
                   Release a claim; --force breaks another agent's
   mesh doctor     Report daemon, runtime, and hook installation status
@@ -79,6 +82,28 @@ async function cmdClaims(): Promise<number> {
   }
 }
 
+async function cmdWatch(args: string[]): Promise<number> {
+  const intervalIndex = args.indexOf('--interval');
+  const interval = intervalIndex === -1 ? NaN : Number(args[intervalIndex + 1]);
+
+  // SIGINT arrives mid-frame; write the reset, then exit from the callback.
+  // A bare process.exit() here truncates and leaves the terminal repainted
+  // over its own scrollback.
+  process.on('SIGINT', () => {
+    process.stdout.write('\n', () => process.exit(0));
+  });
+
+  return runWatch({
+    // Never autostart: looking at the mesh should not create one.
+    connect: () => MeshClient.open({ autostart: false, connectTimeoutMs: 500 }),
+    write: (frame) => process.stdout.write(frame),
+    now: () => Date.now(),
+    cwd: process.cwd(),
+    intervalMs: Number.isFinite(interval) && interval >= 100 ? interval : DEFAULT_INTERVAL_MS,
+    once: args.includes('--once'),
+  });
+}
+
 async function cmdRelease(args: string[]): Promise<number> {
   const force = args.includes('--force');
   const patterns = args.filter((a) => !a.startsWith('--'));
@@ -126,6 +151,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdLog();
     case 'claims':
       return cmdClaims();
+    case 'watch':
+      return cmdWatch(argv.slice(3));
     case 'release':
       return cmdRelease(argv.slice(3));
     case 'hook':

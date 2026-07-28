@@ -5,6 +5,10 @@ export interface WhoAgent {
   status: string;
   activity: string | null;
   idleMs: number;
+  /** Questions addressed to this agent that it has not answered. */
+  unanswered?: number;
+  /** Agents this one is blocked waiting on. */
+  waitingOn?: string[];
 }
 
 export interface WhoPayload {

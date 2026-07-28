@@ -186,6 +186,10 @@ export async function handleRequest(
         activity: agent.activity,
         idleMs: agent.idleMs,
         pid: agent.pid,
+        // An idle agent cannot be reached by a hook-based transport, so the
+        // human is the fallback: mesh watch shows them what is stuck.
+        unanswered: state.asks.pendingFor(agent.name).length,
+        waitingOn: state.asks.waitingOn(agent.name).map((ask) => ask.to),
       }));
       return {
         id,
