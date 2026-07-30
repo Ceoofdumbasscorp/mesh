@@ -20,6 +20,7 @@ Usage:
                   Release a claim; --force breaks another agent's
   mesh doctor     Report daemon, runtime, and hook installation status
   mesh log        Print the daemon journal
+  mesh stop       Stop the daemon (run this after upgrading mesh)
   mesh hook <ev>  Internal: called by Claude/Codex hooks, not by hand
   mesh mcp        Internal: MCP server exposing mesh_* tools to an agent
   mesh daemon     Run the daemon in the foreground (normally automatic)
@@ -77,6 +78,31 @@ async function cmdInit(args: string[]): Promise<number> {
   } catch (error) {
     process.stderr.write(`${(error as Error).message}\n`);
     return 1;
+  }
+}
+
+/**
+ * The daemon is long-lived and holds whatever code it started with, so after
+ * upgrading mesh the running one still serves the old behavior — a fix can
+ * look like it did not work at all. This is how a user picks up a new build
+ * without hunting for a pid.
+ */
+async function cmdStop(): Promise<number> {
+  const client = await MeshClient.open({ autostart: false, connectTimeoutMs: 500 });
+  if (!client) {
+    process.stdout.write('mesh: no daemon running.\n');
+    return 0;
+  }
+  try {
+    const res = await client.request('shutdown');
+    process.stdout.write(
+      res.ok
+        ? 'mesh: daemon stopped. It restarts by itself the next time an agent connects.\n'
+        : `mesh: ${res.error ?? 'shutdown failed'}\n`,
+    );
+    return res.ok ? 0 : 1;
+  } finally {
+    client.close();
   }
 }
 
@@ -178,6 +204,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdDoctor();
     case 'log':
       return cmdLog();
+    case 'stop':
+      return cmdStop();
     case 'claims':
       return cmdClaims();
     case 'watch':

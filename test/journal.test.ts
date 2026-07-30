@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testClock } from '../src/clock.ts';
@@ -100,5 +100,40 @@ test('append writes one line per entry', () => {
     assert.equal(lines.length, 2);
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('the journal rotates instead of growing without limit', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mesh-journal-rot-')));
+  const file = join(dir, 'journal.jsonl');
+  try {
+    const clock = testClock(1000);
+    // A tiny cap makes the boundary observable without writing megabytes.
+    const journal = new Journal(file, clock.now, 400);
+    for (let i = 0; i < 20; i += 1) journal.append('noise', { i, pad: 'x'.repeat(40) });
+
+    assert.ok(existsSync(`${file}.1`), 'one previous generation is kept');
+    assert.ok(statSync(file).size <= 400, 'the live file stays under the cap');
+
+    const live = journal.read();
+    assert.ok(live.length > 0, 'the live file still holds the most recent entries');
+    assert.equal(live.at(-1)?.i, 19, 'the newest entry survives rotation');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a journal picks up the size of a file it did not create', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mesh-journal-rot-')));
+  const file = join(dir, 'journal.jsonl');
+  try {
+    writeFileSync(file, 'x'.repeat(500));
+    const clock = testClock(1000);
+    new Journal(file, clock.now, 400).append('first', {});
+
+    assert.ok(existsSync(`${file}.1`), 'an oversized pre-existing file is rotated on first write');
+    assert.equal(new Journal(file, clock.now).read().length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

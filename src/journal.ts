@@ -1,5 +1,13 @@
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, statSync } from 'node:fs';
 import type { Clock } from './clock.ts';
+
+/**
+ * Rotate past this. The daemon runs for weeks across every project on the
+ * machine, and an append-only file with no ceiling eventually fills the disk
+ * and makes `mesh log` read hundreds of megabytes into memory. One previous
+ * generation is kept, which is all a debugging asset needs.
+ */
+export const MAX_JOURNAL_BYTES = 5 * 1024 * 1024;
 
 export interface JournalEntry {
   at: number;
@@ -16,18 +24,44 @@ export class Journal {
   #file: string;
   #clock: Clock;
   #closed = false;
+  #maxBytes: number;
+  /** Tracked in memory; -1 until the first append reads it from disk once. */
+  #size = -1;
 
-  constructor(file: string, clock: Clock) {
+  constructor(file: string, clock: Clock, maxBytes: number = MAX_JOURNAL_BYTES) {
     this.#file = file;
     this.#clock = clock;
+    this.#maxBytes = maxBytes;
+  }
+
+  /** Renames the current file aside, keeping exactly one previous generation. */
+  #rotate(): void {
+    try {
+      renameSync(this.#file, `${this.#file}.1`);
+    } catch {
+      // Nothing to rotate, or the directory is gone. Either way, keep writing.
+    }
+    this.#size = 0;
   }
 
   append(kind: string, data: Record<string, unknown>): void {
     if (this.#closed) return;
     const entry: JournalEntry = { at: this.#clock(), kind, ...data };
+    const line = `${JSON.stringify(entry)}\n`;
+
+    if (this.#size < 0) {
+      try {
+        this.#size = statSync(this.#file).size;
+      } catch {
+        this.#size = 0;
+      }
+    }
+    if (this.#size + line.length > this.#maxBytes) this.#rotate();
+
     // appendFileSync is atomic for writes this small, so a crash cannot
     // interleave two entries into one corrupt line.
-    appendFileSync(this.#file, `${JSON.stringify(entry)}\n`, 'utf8');
+    appendFileSync(this.#file, line, 'utf8');
+    this.#size += Buffer.byteLength(line);
   }
 
   read(): JournalEntry[] {

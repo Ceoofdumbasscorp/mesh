@@ -103,11 +103,16 @@ export class MeshServer {
     this.#connections.add(socket);
     this.#clearIdleTimer();
 
+    // Shutdown is deferred until the reply has flushed. Closing straight away
+    // destroyed the socket with the response still buffered, so `mesh stop`
+    // reported "connection closed" instead of success even though the daemon
+    // had stopped correctly.
+    let shutdownRequested = false;
     const ctx: ConnectionContext = {
       sessionId: null,
       owns: false,
       requestShutdown: () => {
-        void this.close().then(() => this.#options.onShutdown?.());
+        shutdownRequested = true;
       },
     };
     const decode = createFrameDecoder();
@@ -131,7 +136,13 @@ export class MeshServer {
           } catch (error) {
             response = { id: 0, ok: false, error: `daemon error: ${(error as Error).message}` };
           }
-          if (!socket.destroyed) socket.write(encodeFrame(response));
+          if (!socket.destroyed) {
+            socket.write(encodeFrame(response), () => {
+              if (shutdownRequested) {
+                void this.close().then(() => this.#options.onShutdown?.());
+              }
+            });
+          }
         })();
       }
     });

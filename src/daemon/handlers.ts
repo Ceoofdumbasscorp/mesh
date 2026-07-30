@@ -144,6 +144,10 @@ export async function handleRequest(
       if (!provider) return fail(id, 'register requires "provider"');
 
       const workspace = resolveWorkspace(readString(req, 'cwd') ?? process.cwd());
+      // The hook re-registers before every tool call, so journaling every
+      // register buried the interesting events under thousands of identical
+      // lines and grew the file for no information.
+      const alreadyKnown = state.registry.get(sessionId) !== undefined;
       const agent = state.registry.register({
         sessionId,
         provider,
@@ -157,12 +161,14 @@ export async function handleRequest(
       // ownership keeps it, so a later non-owning register on the same
       // connection cannot silently downgrade it.
       if (req.own === true) ctx.owns = true;
-      state.journal.append('register', {
-        name: agent.name,
-        sessionId,
-        provider,
-        workspace: workspace.root,
-      });
+      if (!alreadyKnown) {
+        state.journal.append('register', {
+          name: agent.name,
+          sessionId,
+          provider,
+          workspace: workspace.root,
+        });
+      }
 
       return {
         id,
@@ -500,9 +506,9 @@ export async function handleRequest(
 
     case 'shutdown': {
       state.journal.append('shutdown', {});
-      // Answer before stopping, so the caller is not left waiting on a socket
-      // that is about to disappear.
-      queueMicrotask(() => ctx.requestShutdown?.());
+      // Flag it; the server stops once this response has actually flushed, so
+      // the caller is not left holding a socket that vanished mid-answer.
+      ctx.requestShutdown?.();
       return { id, ok: true };
     }
 
