@@ -127,3 +127,43 @@ test('force release breaks a claim held by an unresponsive agent', async () => {
     codex.close();
   });
 });
+
+test('mesh release --force works from a plain shell, which is not a registered agent', async () => {
+  // The denial message tells the user to run `mesh release --force "<pattern>"`.
+  // That command runs in their terminal, where nothing has registered — and
+  // requiring a registered caller made the one documented escape hatch from a
+  // stuck claim fail every single time.
+  await withDaemon(async (socketPath, base) => {
+    const agent = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(agent);
+    await agent.request('register', {
+      sessionId: 'stuck', provider: 'codex', cwd: base, own: true,
+    });
+    await agent.request('claim', { patterns: ['server/**'], mode: 'exclusive' });
+
+    // A human in a shell: connected, never registered.
+    const shell = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(shell);
+    const forced = await shell.request('release', {
+      patterns: ['server/**'], force: true, cwd: base,
+    });
+
+    assert.equal(forced.ok, true, forced.error ?? '');
+    assert.equal(forced.released, 1, 'the claim is actually gone');
+
+    const after = await shell.request('claims', { cwd: base });
+    assert.equal(((after.claims ?? []) as unknown[]).length, 0);
+    shell.close();
+    agent.close();
+  });
+});
+
+test('a non-forced release still requires a registered agent', async () => {
+  await withDaemon(async (socketPath) => {
+    const shell = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(shell);
+    const result = await shell.request('release', { patterns: ['x/**'] });
+    assert.equal(result.ok, false, 'releasing your own claims needs an identity');
+    shell.close();
+  });
+});

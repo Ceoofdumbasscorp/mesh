@@ -384,18 +384,31 @@ export async function handleRequest(
 
     case 'release': {
       const caller = callerOf(state, ctx, req);
-      if (!caller) return fail(id, 'release requires a registered agent (call register first)');
       const patterns = Array.isArray(req.patterns)
         ? req.patterns.filter((p): p is string => typeof p === 'string')
         : undefined;
 
       let released = 0;
       if (req.force === true) {
+        // The escape hatch named in every denial message, so it must work from
+        // a plain shell. `mesh release --force` is a human typing into their
+        // own terminal — not a registered agent — and requiring registration
+        // meant the one documented way out of a stuck claim always failed.
+        const root =
+          caller?.workspaceRoot ?? resolveWorkspace(readString(req, 'cwd') ?? process.cwd()).root;
         for (const pattern of patterns ?? []) {
-          released += state.claims.forceRelease(caller.workspaceRoot, pattern);
+          released += state.claims.forceRelease(root, pattern);
         }
-        state.journal.append('release-force', { by: caller.name, patterns });
-      } else {
+        state.journal.append('release-force', {
+          by: caller?.name ?? 'cli',
+          patterns,
+          released,
+        });
+        return { id, ok: true, released };
+      }
+
+      if (!caller) return fail(id, 'release requires a registered agent (call register first)');
+      {
         released = state.claims.release(caller.name, patterns);
         state.journal.append('release', { holder: caller.name, patterns, released });
       }
