@@ -60,6 +60,19 @@ export function toolText(value: unknown): { content: Array<{ type: 'text'; text:
   return { content: [{ type: 'text', text }] };
 }
 
+/**
+ * Everyone but the caller.
+ *
+ * This used to compare an agent's NAME against the caller's SESSION ID —
+ * "claude-1" against a UUID — so it never matched and every agent saw itself
+ * listed as its own peer. An agent alone in a workspace was told it had
+ * company, and `mesh_ask`ing that "peer" fails with "an agent cannot ask
+ * itself". The register response carries our name; that is what to compare.
+ */
+export function peersOf(agents: WhoAgent[], selfName: string | null): WhoAgent[] {
+  return agents.filter((agent) => agent.name !== selfName);
+}
+
 export function describeWho(agents: WhoAgent[]): string {
   if (agents.length === 0) return 'No other agents are working on this project right now.';
   return agents
@@ -75,7 +88,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
   const client = await MeshClient.open();
   if (!client) throw new Error('mesh: could not reach or start the daemon');
 
-  await client.request('register', {
+  const registered = await client.request('register', {
     sessionId: options.sessionId,
     provider: options.provider,
     cwd: options.cwd,
@@ -86,6 +99,9 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     // since it connects and disconnects on every tool call.
     own: true,
   });
+
+  // Our own name in this workspace, used to filter ourselves out of mesh_who.
+  const selfName = typeof registered.name === 'string' ? registered.name : null;
 
   const server = new McpServer({ name: 'mesh', version: '0.1.0' });
   const session = { sessionId: options.sessionId };
@@ -99,8 +115,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     },
     async () => {
       const res = await client.request('who', { cwd: options.cwd, ...session });
-      const agents = ((res.agents ?? []) as WhoAgent[]).filter((a) => a.name !== options.sessionId);
-      return toolText(describeWho(agents));
+      return toolText(describeWho(peersOf((res.agents ?? []) as WhoAgent[], selfName)));
     },
   );
 
@@ -158,6 +173,65 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     async ({ askId, body }) => {
       const res = await client.request('reply', { askId, body, ...session });
       return toolText(res.ok ? `Answered ${res.to}.` : `Failed: ${res.error}`);
+    },
+  );
+
+  server.registerTool(
+    'mesh_claim',
+    {
+      description:
+        'Claim file paths before you edit them, so no other agent can change them underneath you. ' +
+        'Use glob patterns relative to the project root, e.g. "server/**" or "app/page.tsx". ' +
+        'Claim BEFORE you start editing a area, and release when you are done.',
+      inputSchema: {
+        patterns: z
+          .array(z.string())
+          .describe('Glob patterns to claim, e.g. ["server/**", "db/schema.ts"]'),
+        mode: z
+          .enum(['exclusive', 'shared'])
+          .optional()
+          .describe('exclusive (default) blocks other agents; shared is informational only'),
+        ttlMinutes: z
+          .number()
+          .optional()
+          .describe('How long the claim lasts without activity. Default 15.'),
+      },
+    },
+    async ({ patterns, mode, ttlMinutes }) => {
+      const res = await client.request('claim', {
+        patterns,
+        ...(mode ? { mode } : {}),
+        ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
+        ...session,
+      });
+      if (!res.ok) return toolText(`Could not claim: ${res.error}`);
+      return toolText(
+        `Claimed ${(res.patterns as string[]).join(', ')} (${res.mode}). ` +
+          'Other agents are now blocked from editing those paths. ' +
+          'Call mesh_release when you are done.',
+      );
+    },
+  );
+
+  server.registerTool(
+    'mesh_release',
+    {
+      description:
+        'Release paths you claimed, so other agents can edit them again. Call this as soon as you ' +
+        'finish work on an area — a claim you forget to release blocks your peers.',
+      inputSchema: {
+        patterns: z
+          .array(z.string())
+          .optional()
+          .describe('Patterns to release. Omit to release everything you hold.'),
+      },
+    },
+    async ({ patterns }) => {
+      const res = await client.request('release', {
+        ...(patterns ? { patterns } : {}),
+        ...session,
+      });
+      return toolText(res.ok ? `Released ${res.released} claim(s).` : `Failed: ${res.error}`);
     },
   );
 

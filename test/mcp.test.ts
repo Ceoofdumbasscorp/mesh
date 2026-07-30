@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMcpIdentity, toolText, describeWho } from '../src/mcp/server.ts';
+import { resolveMcpIdentity, toolText, describeWho, peersOf } from '../src/mcp/server.ts';
+import { readFileSync } from 'node:fs';
 import { isProvisionalSessionId } from '../src/registry.ts';
 
 test('identity prefers an explicit --session flag', () => {
@@ -107,4 +108,29 @@ test('identity prefers the flag over every environment source', () => {
     4242,
   );
   assert.equal(id.sessionId, 'from-flag');
+});
+
+test('peersOf excludes the caller, matched by name and not by session id', () => {
+  const agents = [
+    { name: 'claude-1', provider: 'claude', role: null, status: 'working', activity: null, idleMs: 0 },
+    { name: 'codex-2', provider: 'codex', role: null, status: 'working', activity: null, idleMs: 0 },
+  ];
+
+  // The bug: comparing a name to a session UUID never matches, so an agent
+  // alone in a workspace was shown itself as a peer.
+  assert.deepEqual(peersOf(agents, 'claude-1').map((a) => a.name), ['codex-2']);
+  assert.deepEqual(peersOf(agents, 'c7cbb924-dffb-4045-b06f-e6099345f69e').map((a) => a.name), [
+    'claude-1',
+    'codex-2',
+  ]);
+  assert.equal(peersOf([agents[0]!], 'claude-1').length, 0, 'alone means alone');
+});
+
+test('the MCP surface lets an agent claim and release paths', () => {
+  // Without these tools nothing can ever create a claim, so the hook's
+  // enforcement — mesh's headline feature — could never fire in real use.
+  const source = readFileSync(new URL('../src/mcp/server.ts', import.meta.url), 'utf8');
+  for (const tool of ['mesh_who', 'mesh_send', 'mesh_ask', 'mesh_reply', 'mesh_inbox', 'mesh_claim', 'mesh_release']) {
+    assert.match(source, new RegExp(`'${tool}'`), `${tool} must be registered`);
+  }
 });
