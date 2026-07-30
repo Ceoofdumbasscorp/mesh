@@ -24,6 +24,8 @@ function setup() {
     asks: new AskRegistry({ clock: clock.now }),
     claims: new ClaimTable({ clock: clock.now }),
     waiters: new Waiters(),
+    // Tests are hermetic: every agent is alive unless a test says otherwise.
+    isAlive: () => true,
   };
   return { base, clock, state, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }

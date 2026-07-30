@@ -167,3 +167,56 @@ test('a non-forced release still requires a registered agent', async () => {
     shell.close();
   });
 });
+
+test('a claim held by a dead session stops blocking, and the ghost leaves mesh who', async () => {
+  // An agent whose MCP server never started is registered by its hook alone,
+  // so no connection close ever removes it. It used to sit in the registry
+  // forever holding its claims — wedging every live agent out of those paths
+  // with no way back except killing the daemon.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'mesh-reap-')));
+  const socketPath = join(base, 'mesh.sock');
+  const dead = new Set<number>();
+  const server = new MeshServer({
+    socketPath,
+    state: {
+      ...createDaemonState({ journalPath: join(base, 'journal.jsonl') }),
+      isAlive: (pid: number) => !dead.has(pid),
+    },
+  });
+  await server.start();
+
+  try {
+    const ghost = await MeshClient.open({ socketPath, autostart: false });
+    const live = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(ghost && live);
+
+    await ghost.request('register', {
+      sessionId: 'ghost', provider: 'codex', cwd: base, pid: 4242,
+    });
+    await ghost.request('claim', {
+      sessionId: 'ghost', patterns: ['server/**'], mode: 'exclusive',
+    });
+    await live.request('register', {
+      sessionId: 'live', provider: 'claude', cwd: base, pid: 4243, own: true,
+    });
+
+    const blocked = await live.request('check', { sessionId: 'live', path: 'server/api.ts' });
+    assert.equal(blocked.allowed, false, 'a live holder blocks, as it should');
+
+    // The ghost's host process exits. Nothing closes its connection.
+    dead.add(4242);
+
+    const afterDeath = await live.request('check', { sessionId: 'live', path: 'server/api.ts' });
+    assert.equal(afterDeath.allowed, true, 'a dead holder must not block a live agent');
+
+    const who = await live.request('who', { cwd: base });
+    const names = ((who.agents ?? []) as Array<{ name: string }>).map((a) => a.name);
+    assert.deepEqual(names, ['claude-1'], 'the ghost is gone from mesh who');
+
+    ghost.close();
+    live.close();
+  } finally {
+    await server.close();
+    rmSync(base, { recursive: true, force: true });
+  }
+});

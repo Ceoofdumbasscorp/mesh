@@ -9,6 +9,7 @@ import { Mailbox } from '../mailbox.ts';
 import { AskRegistry } from '../asks.ts';
 import { ClaimTable } from '../claims.ts';
 import { Waiters } from './waiters.ts';
+import { processIsAlive } from './liveness.ts';
 import { createFrameDecoder, encodeFrame } from '../protocol.ts';
 import { handleRequest } from './handlers.ts';
 import type { ConnectionContext, DaemonState } from './handlers.ts';
@@ -27,10 +28,12 @@ export function createDaemonState(options: {
   journalPath: string;
   clock?: Clock;
   idleAfterMs?: number;
+  isAlive?: (pid: number) => boolean;
 }): DaemonState {
   const clock = options.clock ?? systemClock;
   return {
     clock,
+    isAlive: options.isAlive ?? processIsAlive,
     registry: new Registry({ clock, idleAfterMs: options.idleAfterMs }),
     journal: new Journal(options.journalPath, clock),
     mailbox: new Mailbox({ clock }),

@@ -16,6 +16,26 @@ export interface DaemonState {
   asks: AskRegistry;
   claims: ClaimTable;
   waiters: Waiters;
+  /** Whether a host process is still running. Injected so tests stay hermetic. */
+  isAlive: (pid: number) => boolean;
+}
+
+/**
+ * Removes agents whose host process has exited, releasing whatever they held.
+ * Called wherever a stale agent would otherwise mislead someone: when listing
+ * agents, and before enforcing a claim — a dead holder must never block a live
+ * agent's edit.
+ */
+function reapDeadAgents(state: DaemonState): void {
+  for (const agent of state.registry.reap(state.isAlive)) {
+    const releasedClaims = state.claims.release(agent.name);
+    state.journal.append('reap', {
+      name: agent.name,
+      sessionId: agent.sessionId,
+      pid: agent.pid,
+      releasedClaims,
+    });
+  }
 }
 
 /** Silence beyond this downgrades a holder's claim from deny to warning. */
@@ -177,6 +197,7 @@ export async function handleRequest(
     }
 
     case 'who': {
+      reapDeadAgents(state);
       const workspace = resolveWorkspace(readString(req, 'cwd') ?? process.cwd());
       const agents = state.registry.list(workspace.root).map((agent) => ({
         name: agent.name,
@@ -434,6 +455,8 @@ export async function handleRequest(
     }
 
     case 'check': {
+      // A claim held by a session that has since died must not block anyone.
+      reapDeadAgents(state);
       const caller = callerOf(state, ctx, req);
       if (!caller) return { id, ok: true, allowed: true };
       const rawPath = readString(req, 'path');

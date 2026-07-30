@@ -11,7 +11,12 @@ async function withDaemon<T>(fn: (socketPath: string, base: string) => Promise<T
   const socketPath = join(base, 'mesh.sock');
   const server = new MeshServer({
     socketPath,
-    state: createDaemonState({ journalPath: join(base, 'journal.jsonl') }),
+    state: {
+      ...createDaemonState({ journalPath: join(base, 'journal.jsonl') }),
+      // These tests register invented pids. Without this the reaper correctly
+      // evicts them as dead processes, which is a different test's subject.
+      isAlive: () => true,
+    },
   });
   await server.start();
   try {

@@ -159,6 +159,27 @@ export class Registry {
     return agent;
   }
 
+  /**
+   * Drops agents whose host process is gone.
+   *
+   * The MCP connection is the normal liveness signal, but an agent registered
+   * only by its hook has no owning connection, so nothing ever removes it. Its
+   * row lingered in `mesh who` and its claims kept blocking live agents. The
+   * predicate is injected so this stays a pure module with no syscalls of its
+   * own; agents that never reported a pid are left alone, since there is
+   * nothing to check.
+   */
+  reap(isAlive: (pid: number) => boolean): Agent[] {
+    const dead: Agent[] = [];
+    for (const agent of [...this.#agents.values()]) {
+      if (agent.pid === null) continue;
+      if (isAlive(agent.pid)) continue;
+      dead.push(agent);
+    }
+    for (const agent of dead) this.unregister(agent.sessionId);
+    return dead;
+  }
+
   unregister(sessionId: string): Agent | null {
     const resolved = this.#resolve(sessionId);
     const agent = this.#agents.get(resolved);

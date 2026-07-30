@@ -210,3 +210,34 @@ test('a merge does not free the agent name for reuse', () => {
   assert.equal(first.name, 'claude-1');
   assert.equal(second.name, 'claude-2', 'the merged agent still holds claude-1');
 });
+
+test('reap drops agents whose host process is gone', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'live', provider: 'claude', workspace: wsA, pid: 100 });
+  registry.register({ sessionId: 'dead', provider: 'codex', workspace: wsA, pid: 200 });
+
+  const reaped = registry.reap((pid) => pid === 100);
+
+  assert.deepEqual(reaped.map((a) => a.sessionId), ['dead']);
+  assert.deepEqual(registry.list(wsA.root).map((a) => a.name), ['claude-1']);
+});
+
+test('reap leaves agents that never reported a pid', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'unknown-pid', provider: 'claude', workspace: wsA });
+
+  assert.deepEqual(registry.reap(() => false), [], 'nothing to check means nothing to reap');
+  assert.equal(registry.list(wsA.root).length, 1);
+});
+
+test('reap clears the alias of a merged agent', () => {
+  const { registry } = setup();
+  registry.register({ sessionId: 'pid-300', provider: 'codex', workspace: wsA, pid: 300 });
+  registry.register({ sessionId: 'real-3', provider: 'codex', workspace: wsA, pid: 300 });
+
+  registry.reap(() => false);
+
+  assert.equal(registry.get('pid-300'), undefined);
+  assert.equal(registry.get('real-3'), undefined);
+  assert.equal(registry.list(wsA.root).length, 0);
+});
