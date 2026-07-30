@@ -24,6 +24,10 @@ workspace: leadops-v2
 | **Talk** | `mesh_send` for one-way, `mesh_ask` to block on an answer from a peer |
 | **Not collide** | `mesh_claim` takes a path; another agent's write to it is denied, not warned about |
 
+Enforcement covers the structured edit tools *and* the shell — `Write`, `Edit`,
+`apply_patch`, and `echo x > file`, `tee`, `sed -i`, `mv`, `cp`, `rm`. An agent
+that decides to route around a claim finds the same wall.
+
 A blocked edit reads like this, and is written for the agent to act on:
 
 ```
@@ -68,6 +72,7 @@ the trust state.
 | `mesh release --force <pattern>` | Break a stuck claim |
 | `mesh doctor` | Node, build, daemon, hooks, MCP registration, Codex trust |
 | `mesh log` | Tail the daemon journal |
+| `mesh stop` | Stop the daemon. **Run this after upgrading mesh** — a running daemon keeps the code it started with |
 
 ## How it works
 
@@ -94,7 +99,14 @@ race mesh exists to prevent.
 Agents are scoped to a workspace — the git root, else the cwd. Agents in
 different workspaces cannot see each other.
 
-## Two honest limitations
+## The agent's tools
+
+An agent gets seven tools: `mesh_who`, `mesh_send`, `mesh_ask`, `mesh_reply`,
+`mesh_inbox`, `mesh_claim`, `mesh_release`. `mesh init` also writes a short
+usage note into each host's instructions file, so an agent knows to claim a
+path before working in it and to release when done.
+
+## Three honest limitations
 
 **An idle agent cannot be reached.** Injection rides the hook, and hooks only
 fire when an agent runs a tool. A question sent to an agent sitting at its prompt
@@ -103,6 +115,13 @@ otherwise. `mesh watch` shows the unanswered count so you can nudge that window.
 
 **The hook costs ~64ms per tool call.** About 50ms of that is the Node startup
 floor. `npm run bench:hook` fails above 90ms so it cannot silently regress.
+
+**Shell enforcement is pattern-based, not a sandbox.** mesh reads a shell
+command for the ways files actually get written — redirections, `tee`,
+`sed -i`, `mv`/`cp`/`rm`, `dd of=` — and checks those paths against the claim
+table. It is deliberately conservative: an exotic construction it does not
+recognize proceeds rather than being blocked on a guess. Claims are a
+coordination mechanism between cooperating agents, not a security boundary.
 
 ## Failure behavior
 
