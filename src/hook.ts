@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { MeshClient } from './client.ts';
+import { shellWriteTargets } from './shell.ts';
 
 export interface HookInput {
   hook_event_name?: string;
@@ -127,6 +128,13 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   // apply_patch FIRST and only falling back to a shell when blocked, so
   // omitting it would leave its primary edit path unenforced.
   'apply_patch',
+  // Shell tools. A blocked agent that reaches for `echo > file` must hit the
+  // same wall as one that reaches for Edit; targetPathsOf reads the command
+  // string for redirections, tee, sed -i, mv/cp, rm and friends.
+  'Bash',
+  'shell',
+  'local_shell',
+  'run_terminal_cmd',
 ]);
 
 /** `*** Update File: path` and its Add/Delete siblings, from the patch envelope. */
@@ -143,6 +151,15 @@ export function targetPathOf(input: HookInput): string | null {
  */
 export function targetPathsOf(input: HookInput): string[] {
   const args = input.tool_input ?? {};
+
+  // A shell command is an edit tool with extra steps. Any host's shell tool
+  // carries its command as a string, so this covers Claude's Bash and Codex's
+  // shell without hardcoding either name — and without it, `echo x > file`
+  // bypassed a claim the design promises is enforced rather than advised.
+  const command = args.command;
+  if (typeof command === 'string' && command.length > 0) {
+    return shellWriteTargets(command);
+  }
 
   const direct: string[] = [];
   for (const key of ['file_path', 'notebook_path', 'path']) {

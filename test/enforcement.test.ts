@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { targetPathsOf, WRITE_TOOLS } from '../src/hook.ts';
 import { testClock } from '../src/clock.ts';
 import { Registry } from '../src/registry.ts';
 import { Journal } from '../src/journal.ts';
@@ -210,4 +211,32 @@ test('claim requires a registered agent', async () => {
   } finally {
     cleanup();
   }
+});
+
+test('a shell redirect at a claimed path is blocked like any other edit', () => {
+  // The hole this closes: an agent told "you are blocked, do not work around
+  // it" would otherwise find `echo x > file` completely unenforced.
+  assert.deepEqual(
+    targetPathsOf({ tool_name: 'Bash', tool_input: { command: 'echo x > server/api.ts' } }),
+    ['server/api.ts'],
+  );
+  assert.equal(WRITE_TOOLS.has('Bash'), true);
+});
+
+test('a read-only shell command produces no paths to check', () => {
+  // The hot path: most Bash calls must cost zero extra round-trips.
+  assert.deepEqual(
+    targetPathsOf({ tool_name: 'Bash', tool_input: { command: 'npm test && git status' } }),
+    [],
+  );
+});
+
+test('a heredoc write is caught', () => {
+  assert.deepEqual(
+    targetPathsOf({
+      tool_name: 'Bash',
+      tool_input: { command: "cat > server/api.ts <<'EOF'\nchanged\nEOF" },
+    }),
+    ['server/api.ts'],
+  );
 });
