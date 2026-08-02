@@ -139,11 +139,21 @@ export function renderDoctor(report: DoctorReport): string {
       : '  codex mcp        not registered — run `mesh init`',
   );
 
-  lines.push(
-    report.codexHooksTrusted
-      ? '  codex trust      ok        the hook is approved'
-      : '  codex trust      PENDING   Codex asks once on next launch; until then it runs no hooks and mesh cannot enforce claims',
-  );
+  // The one step mesh cannot take for the user: approving a hook is an
+  // execution grant, so mesh reads this state and never writes it. Say plainly
+  // what is broken and what the keystroke is, because a bare PENDING reads as
+  // a warning to ignore rather than the reason nothing works.
+  if (report.codexHooksTrusted) {
+    lines.push('  codex trust      ok        the hooks are approved');
+  } else {
+    lines.push(
+      '  codex trust      PENDING   Codex is running NO mesh hooks — it cannot receive',
+      '                             messages, cannot be woken, and claims are not enforced',
+      '                             there. Restart Codex and approve the hook prompt when it',
+      '                             appears. mesh cannot approve it for you: that would be',
+      '                             mesh granting itself execution rights on your machine.',
+    );
+  }
 
   lines.push(
     report.codexVersion

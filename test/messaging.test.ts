@@ -140,6 +140,21 @@ test('send to an unknown peer reports undeliverable', async () => {
   }
 });
 
+test('broadcast to an empty room succeeds as a no-op', async () => {
+  // An agent working alone must still be able to leave word for whoever shows
+  // up. Failing the call made it read as its own mistake and retry.
+  const { base, state, cleanup } = setup();
+  try {
+    const a = ctx();
+    await register(state, a, 'sa', 'claude', base);
+    const sent = await handleRequest(state, a, { id: 2, op: 'send', to: '*', body: 'all hands' });
+    assert.equal(sent.ok, true);
+    assert.equal(sent.delivered, 0);
+  } finally {
+    cleanup();
+  }
+});
+
 test('send resolves a target by role as well as by name', async () => {
   const { base, state, cleanup } = setup();
   try {

@@ -154,6 +154,9 @@ export async function handleRequest(
         workspace,
         role: readString(req, 'role'),
         pid: typeof req.pid === 'number' ? req.pid : undefined,
+        // The registry needs this too, not just the connection: it is the only
+        // evidence that separates a rotated session id from a second agent.
+        owns: req.own === true,
       });
 
       ctx.sessionId = sessionId;
@@ -234,6 +237,13 @@ export async function handleRequest(
       if (!target) return fail(id, 'send requires "to"');
 
       const names = resolveTargets(state, caller.workspaceRoot, caller.name, target);
+      // A broadcast to an empty room is a no-op, not a failure. Erroring on it
+      // made "tell whoever is here" unusable exactly when an agent was alone
+      // and most needed to leave word — and an error reads to the agent as
+      // something it did wrong, so it retries instead of moving on.
+      if (names.length === 0 && target === '*') {
+        return { id, ok: true, delivered: 0, to: [], note: 'No other agents on this workspace.' };
+      }
       if (names.length === 0) return fail(id, `No agent matching "${target}" in this workspace`);
 
       try {

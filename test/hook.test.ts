@@ -7,7 +7,9 @@ import {
   parseHookInput,
   summarizeTool,
   formatInjection,
+  formatWake,
   buildHookOutput,
+  buildStopOutput,
 } from '../src/hook.ts';
 
 function fakeStdin(text: string, keepOpen = false): NodeJS.ReadStream {
@@ -100,6 +102,54 @@ test('buildHookOutput emits the shape Claude and Codex both accept', () => {
 test('buildHookOutput emits a bare object when there is nothing to inject', () => {
   assert.deepEqual(buildHookOutput('PreToolUse', null), {});
   assert.deepEqual(buildHookOutput('PreToolUse', ''), {});
+});
+
+test('formatWake tells the agent not to stop, and how to stop', () => {
+  const out = formatWake([
+    { kind: 'message', from: 'codex-2', body: 'engine is wired', askId: null },
+  ]);
+  assert.match(out, /do not stop yet/i);
+  assert.match(out, /codex-2/);
+  assert.match(out, /engine is wired/);
+  // Without an exit condition an agent with nothing to do invents work.
+  assert.match(out, /stop again/i);
+});
+
+test('buildStopOutput blocks the stop so the host resumes the turn', () => {
+  // Measured in the Codex binary's stop.command.output schema: decision
+  // "block" is the only enum value, and reason is required alongside it.
+  const out = buildStopOutput(
+    [{ kind: 'message', from: 'claude-1', body: 'your turn', askId: null }],
+    false,
+  );
+  assert.equal(out.decision, 'block');
+  assert.match(String(out.reason), /your turn/);
+});
+
+test('buildStopOutput lets an agent with an empty inbox go idle', () => {
+  assert.deepEqual(buildStopOutput([], false), {});
+  assert.deepEqual(buildStopOutput([], true), {});
+});
+
+test('buildStopOutput does not wake twice for ordinary chatter', () => {
+  // stop_hook_active means a previous block resumed this turn. Blocking again
+  // on plain messages is how a wake loop starts.
+  const out = buildStopOutput(
+    [{ kind: 'message', from: 'claude-1', body: 'nice work', askId: null }],
+    true,
+  );
+  assert.deepEqual(out, {});
+});
+
+test('buildStopOutput still wakes twice for a blocked asker', () => {
+  // A peer inside mesh_ask is stranded until answered; that is worth one more
+  // turn even when the loop guard is armed.
+  const out = buildStopOutput(
+    [{ kind: 'ask', from: 'claude-1', body: 'which grid size?', askId: 7 }],
+    true,
+  );
+  assert.equal(out.decision, 'block');
+  assert.match(String(out.reason), /mesh_reply/);
 });
 
 test('the hook module imports no heavy dependencies', () => {

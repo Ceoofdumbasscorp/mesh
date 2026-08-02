@@ -59,12 +59,21 @@ test('codexHookTrustRecorded requires approval for every event mesh installs', (
     `[hooks.state."${path}:${event}:0:0"]\ntrusted_hash = "sha256:abc"\n`;
 
   assert.equal(
-    codexHookTrustRecorded(`${trust('session_start')}${trust('pre_tool_use')}`, path),
+    codexHookTrustRecorded(
+      `${trust('session_start')}${trust('pre_tool_use')}${trust('stop')}`,
+      path,
+    ),
     true,
   );
   // A machine whose hooks.json holds only another tool's SessionStart hook
   // must not report mesh's PreToolUse enforcement hook as approved.
   assert.equal(codexHookTrustRecorded(trust('session_start'), path), false);
+  // Partial approval is not approval: without stop, mesh reaches this agent
+  // only while it is running tools, which is the whole failure Stop fixes.
+  assert.equal(
+    codexHookTrustRecorded(`${trust('session_start')}${trust('pre_tool_use')}`, path),
+    false,
+  );
   assert.equal(codexHookTrustRecorded(trust('pre_tool_use'), '/other/hooks.json'), false);
   assert.equal(codexHookTrustRecorded('', path), false);
 });

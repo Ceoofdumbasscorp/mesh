@@ -188,6 +188,67 @@ test('two real sessions sharing a pid stay separate agents', () => {
   assert.equal(registry.list(wsA.root).length, 2, 'merging is only ever a provisional-to-real move');
 });
 
+/**
+ * Measured on a live Claude Code session 2026-08-02.
+ *
+ * A host process outlives its session id: /clear, /resume and compaction all
+ * mint a new one. The hook is spawned per tool call and always carries the
+ * CURRENT id, but the MCP server is spawned once at launch and caches the id it
+ * was given forever. So one live agent reports two different *real* ids on one
+ * pid — sequentially, not concurrently.
+ *
+ * Splitting them is not cosmetic. The hook-side agent is the one peers see and
+ * address, and the MCP-side agent is the only one that can call a tool, so a
+ * peer's mesh_ask arrived at claude-3 while mesh_reply insisted it was claude-2
+ * and refused: "Ask 4 is addressed to claude-3, not claude-2". The agent could
+ * be asked and could not answer.
+ */
+test('a host that rotates its session id stays one agent', () => {
+  const { registry } = setup();
+
+  // The MCP server registers at launch and owns the session's lifetime.
+  const atLaunch = registry.register({
+    sessionId: 'launch-id', provider: 'claude', workspace: wsA, pid: 98940, owns: true,
+  });
+  // Later the host rotates its id and the next hook carries the new one.
+  const afterClear = registry.register({
+    sessionId: 'rotated-id', provider: 'claude', workspace: wsA, pid: 98940,
+  });
+
+  assert.equal(afterClear.name, atLaunch.name, 'the same agent, so claims and mail survive');
+  assert.equal(registry.list(wsA.root).length, 1, 'one host process is one agent');
+});
+
+test('both ids resolve after a rotation, so the agent can answer what it was asked', () => {
+  const { registry } = setup();
+  registry.register({
+    sessionId: 'launch-id', provider: 'claude', workspace: wsA, pid: 98940, owns: true,
+  });
+  registry.register({
+    sessionId: 'rotated-id', provider: 'claude', workspace: wsA, pid: 98940,
+  });
+
+  const name = registry.byName(wsA.root, 'claude-1')?.name;
+  assert.equal(registry.get('rotated-id')?.name, name, 'the hook side must resolve');
+  assert.equal(registry.get('launch-id')?.name, name, 'the MCP side must resolve to the same agent');
+
+  // The MCP connection still knows itself only by its launch id, and its close
+  // is the liveness signal, so unregistering by that id must still work.
+  assert.equal(registry.unregister('launch-id')?.name, name);
+  assert.equal(registry.list(wsA.root).length, 0);
+});
+
+test('a rotation only merges into an agent an owning connection registered', () => {
+  const { registry } = setup();
+
+  // Neither of these is the lifetime-owning MCP connection, so there is no
+  // evidence they are one host. Merging here would silently fuse two agents.
+  registry.register({ sessionId: 'hook-a', provider: 'claude', workspace: wsA, pid: 4242 });
+  registry.register({ sessionId: 'hook-b', provider: 'claude', workspace: wsA, pid: 4242 });
+
+  assert.equal(registry.list(wsA.root).length, 2);
+});
+
 test('agents in different workspaces never merge, whatever their pids', () => {
   const { registry } = setup();
   registry.register({ sessionId: 'pid-500', provider: 'claude', workspace: wsA, pid: 500 });

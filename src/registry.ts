@@ -10,6 +10,13 @@ export interface RegisterInput {
   workspace: Workspace;
   role?: string;
   pid?: number;
+  /**
+   * True only for the connection that owns the session's lifetime — the MCP
+   * server. The hook never sets it, because it connects and disconnects on
+   * every tool call. That difference is what makes a rotated session id
+   * recognizable; see `#twinFor`.
+   */
+  owns?: boolean;
 }
 
 export interface Agent {
@@ -23,6 +30,8 @@ export interface Agent {
   registeredAt: number;
   lastSeen: number;
   activity: string | null;
+  /** Whether a lifetime-owning connection ever registered this agent. */
+  owned: boolean;
 }
 
 export interface AgentView extends Agent {
@@ -79,15 +88,32 @@ export class Registry {
 
   /**
    * An agent that is the same session as `incomingId` under another name.
-   * Exactly one of the two ids must be provisional: two *real* ids sharing a
-   * pid are genuinely different sessions and merging them would silently fuse
-   * two agents — far worse than the duplicate row this fixes.
+   *
+   * Two cases merge, and both need evidence that the ids belong to one host:
+   *
+   * 1. Exactly one id is provisional. The MCP server had to invent one and the
+   *    hook knows the host's real id.
+   * 2. Both ids are real, but the one already held came from the lifetime-owning
+   *    MCP connection and the incoming one did not. A host process outlives its
+   *    session id — /clear, /resume and compaction all mint a new one — while the
+   *    MCP server, spawned once at launch, keeps reporting the id it started
+   *    with. The hook always carries the current id, so this is one agent whose
+   *    id rotated underneath it, not two agents.
+   *
+   * Without that ownership evidence two real ids on one pid stay separate:
+   * fusing two genuine agents is far worse than the duplicate row it would fix.
    */
-  #twinFor(workspaceRoot: string, pid: number, incomingId: string): Agent | undefined {
+  #twinFor(
+    workspaceRoot: string,
+    pid: number,
+    incomingId: string,
+    incomingOwns: boolean,
+  ): Agent | undefined {
     const incomingProvisional = isProvisionalSessionId(incomingId);
     for (const agent of this.#agents.values()) {
       if (agent.workspaceRoot !== workspaceRoot || agent.pid !== pid) continue;
       if (isProvisionalSessionId(agent.sessionId) !== incomingProvisional) return agent;
+      if (!incomingProvisional && agent.owned && !incomingOwns) return agent;
     }
     return undefined;
   }
@@ -100,6 +126,7 @@ export class Registry {
   #adopt(twin: Agent, input: RegisterInput, now: number): Agent {
     twin.lastSeen = now;
     if (input.role !== undefined) twin.role = input.role;
+    if (input.owns) twin.owned = true;
 
     if (isProvisionalSessionId(twin.sessionId)) {
       // The real id wins. The provisional one becomes an alias, because the
@@ -128,6 +155,9 @@ export class Registry {
       existing.lastSeen = now;
       if (input.role !== undefined) existing.role = input.role;
       if (input.pid !== undefined) existing.pid = input.pid;
+      // Sticky, like ctx.owns on the connection: a later hook register must not
+      // downgrade an agent the MCP server already claimed.
+      if (input.owns) existing.owned = true;
       return existing;
     }
 
@@ -138,7 +168,12 @@ export class Registry {
     const twin =
       input.pid === undefined
         ? undefined
-        : this.#twinFor(input.workspace.root, input.pid, input.sessionId);
+        : this.#twinFor(
+            input.workspace.root,
+            input.pid,
+            input.sessionId,
+            input.owns === true,
+          );
     if (twin) return this.#adopt(twin, input, now);
 
     const agent: Agent = {
@@ -152,6 +187,7 @@ export class Registry {
       registeredAt: now,
       lastSeen: now,
       activity: null,
+      owned: input.owns === true,
     };
 
     this.#agents.set(agent.sessionId, agent);

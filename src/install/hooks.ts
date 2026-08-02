@@ -16,11 +16,26 @@ export type HookConfig = Record<string, HookMatcher[]>;
  *
  * SessionStart registers the agent. PreToolUse reports activity, injects
  * anything addressed to this agent, and is the enforcement point for claims.
+ * Stop is what makes an idle agent reachable: PreToolUse rides tool calls, and
+ * an agent sitting at its prompt makes none, so without Stop a message to it
+ * waits for a human to type. It costs nothing on the critical path — it fires
+ * once per turn, not once per tool call.
+ *
  * PostToolUse would report nothing PreToolUse has not already reported, and
- * every installed event costs another 64ms process on the user's critical
- * path. Phase 4 adds Stop when it has a reminder to deliver there.
+ * every installed event costs another 64ms process on the user's critical path.
  */
-export const MESH_HOOK_EVENTS: readonly string[] = ['SessionStart', 'PreToolUse'];
+export const MESH_HOOK_EVENTS: readonly string[] = ['SessionStart', 'PreToolUse', 'Stop'];
+
+/**
+ * Events that take a matcher. Stop is not one of them — it has no tool to
+ * match on, and both hosts key trust and dispatch off the exact block shape.
+ * Source: OpenAI's own Claude→Codex converter, CODEX_HOOK_MATCHER_EVENTS.
+ */
+const MATCHER_EVENTS: ReadonlySet<string> = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'SessionStart',
+]);
 
 /** Ten seconds is far above the 90ms budget; it exists to bound a wedged host. */
 const HOOK_TIMEOUT_SECONDS = 10;
@@ -81,7 +96,7 @@ export function withMeshHooks(
   for (const event of MESH_HOOK_EVENTS) {
     const others = (next[event] ?? []).filter((block) => !blockMentions(block, options.entry));
     const block: HookMatcher = {
-      ...(options.includeMatcher ? { matcher: '' } : {}),
+      ...(options.includeMatcher && MATCHER_EVENTS.has(event) ? { matcher: '' } : {}),
       hooks: [
         {
           type: 'command',

@@ -92,9 +92,11 @@ the trust state.
 
 The MCP server is how an agent acts. The hook is how it sees and how it is
 policed: `PreToolUse` injects anything addressed to that agent, and returns a
-deny decision when the tool would write to a claimed path. One daemon arbitrates,
-because two agents claiming the same path in the same millisecond is exactly the
-race mesh exists to prevent.
+deny decision when the tool would write to a claimed path. `Stop` is how an
+agent is *reached* — it fires as the agent tries to go quiet, and blocks that
+stop while mail is waiting, which is what makes a handoff land without a human
+relaying it. One daemon arbitrates, because two agents claiming the same path in
+the same millisecond is exactly the race mesh exists to prevent.
 
 Agents are scoped to a workspace — the git root, else the cwd. Agents in
 different workspaces cannot see each other.
@@ -108,13 +110,20 @@ path before working in it and to release when done.
 
 ## Three honest limitations
 
-**An idle agent cannot be reached.** Injection rides the hook, and hooks only
-fire when an agent runs a tool. A question sent to an agent sitting at its prompt
-is queued, not delivered, and `mesh_ask` says `queued` rather than pretending
-otherwise. `mesh watch` shows the unanswered count so you can nudge that window.
+**An agent is woken at the end of its turn, not mid-thought.** `PreToolUse`
+injection rides tool calls, so on its own it never reaches an agent sitting at
+its prompt. `Stop` closes that: when an agent tries to end its turn with mail
+waiting, mesh returns `decision: "block"` and the host resumes it instead of
+going quiet — so a message lands within one turn without anyone typing. The
+remaining gap is latency, not delivery: an agent halfway through a long turn
+sees the message at its next tool call, and one that has already stopped stays
+stopped until its next turn. To avoid a wake loop, a second consecutive wake
+fires only for a `mesh_ask`, where a peer is genuinely blocked; ordinary
+messages stay queued for the next tool call rather than being dropped.
 
 **The hook costs ~64ms per tool call.** About 50ms of that is the Node startup
 floor. `npm run bench:hook` fails above 90ms so it cannot silently regress.
+`Stop` adds one more process per *turn*, which is not on that path.
 
 **Shell enforcement is pattern-based, not a sandbox.** mesh reads a shell
 command for the ways files actually get written — redirections, `tee`,

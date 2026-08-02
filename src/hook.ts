@@ -82,14 +82,9 @@ export function summarizeTool(input: HookInput): string | null {
   return tool;
 }
 
-/**
- * Renders queued mail as directive text. Fenced and attributed so the agent
- * treats it as a report from a peer rather than an instruction from its user.
- */
-export function formatInjection(messages: InjectedMessage[]): string {
-  if (messages.length === 0) return '';
-
-  const lines = ['[MESH] Messages from other agents on this project:'];
+/** One bullet per envelope, attributed to its sender. */
+function renderMessages(messages: InjectedMessage[]): string[] {
+  const lines: string[] = [];
   for (const message of messages) {
     if (message.kind === 'ask') {
       lines.push(
@@ -103,7 +98,33 @@ export function formatInjection(messages: InjectedMessage[]): string {
       lines.push(`  • ${message.from}: ${message.body}`);
     }
   }
-  return lines.join('\n');
+  return lines;
+}
+
+/**
+ * Renders queued mail as directive text. Fenced and attributed so the agent
+ * treats it as a report from a peer rather than an instruction from its user.
+ */
+export function formatInjection(messages: InjectedMessage[]): string {
+  if (messages.length === 0) return '';
+  return ['[MESH] Messages from other agents on this project:', ...renderMessages(messages)].join(
+    '\n',
+  );
+}
+
+/**
+ * The same mail, worded for the moment the agent was about to go quiet. The
+ * closing line matters: without an explicit exit condition an agent that has
+ * nothing to do reads a blocked stop as "produce something anyway".
+ */
+export function formatWake(messages: InjectedMessage[]): string {
+  if (messages.length === 0) return '';
+  return [
+    '[MESH] Do not stop yet — mail arrived from another agent on this project:',
+    ...renderMessages(messages),
+    'Handle it now: answer the question, do the work, or mesh_send a reply.' +
+      ' If it genuinely needs nothing from you, stop again — an empty inbox does not re-fire this.',
+  ].join('\n');
 }
 
 /**
@@ -199,6 +220,30 @@ export function buildDenyOutput(event: string, reason: string): Record<string, u
 }
 
 /**
+ * The wake decision, taken at the moment the agent would return to its prompt.
+ *
+ * `decision: "block"` with a `reason` makes both hosts resume the turn instead
+ * of going quiet — measured in the Codex binary's own `stop.command.output`
+ * schema, which notes it enforces Claude's "reason required when blocking"
+ * rule. This is the only channel that reaches an agent nobody is typing at:
+ * PreToolUse rides tool calls, and an idle agent makes none.
+ *
+ * `stopHookActive` is the loop guard. It is true when a previous block is what
+ * resumed this turn, so a second block risks a wake loop. In that state mesh
+ * blocks only for an ask — a peer sitting inside mesh_ask is stranded until
+ * answered, which is worth one more turn; ordinary chatter is not, and stays
+ * queued for the next tool call.
+ */
+export function buildStopOutput(
+  messages: InjectedMessage[],
+  stopHookActive: boolean,
+): Record<string, unknown> {
+  if (messages.length === 0) return {};
+  if (stopHookActive && !messages.some((message) => message.kind === 'ask')) return {};
+  return { decision: 'block', reason: formatWake(messages) };
+}
+
+/**
  * Fail-open at every step: any problem yields {} and the agent proceeds
  * exactly as it would without mesh installed.
  */
@@ -244,9 +289,25 @@ export async function runHook(
         }
       }
 
-      const inbox = await client.request('inbox', { sessionId });
+      // Stop reads without draining. Mail this hook declines to wake for must
+      // stay queued for the next tool call — a destructive read followed by a
+      // "do not wake" decision would swallow the message entirely.
+      const peeking = event === 'Stop';
+      const inbox = await client.request('inbox', {
+        sessionId,
+        ...(peeking ? { drain: false } : {}),
+      });
       if (!inbox.ok) return {};
       const messages = (inbox.messages ?? []) as InjectedMessage[];
+
+      if (event === 'Stop') {
+        const stopHookActive = input.stop_hook_active === true;
+        const decision = buildStopOutput(messages, stopHookActive);
+        // Only consume the mail once it is certain to reach the agent.
+        if (decision.decision === 'block') await client.request('inbox', { sessionId });
+        return decision;
+      }
+
       return buildHookOutput(event, formatInjection(messages));
     } finally {
       client.close();

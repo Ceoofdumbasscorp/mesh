@@ -100,6 +100,67 @@ test('a claim survives the merge, because the agent keeps its name', async () =>
   });
 });
 
+test('a rotated real session id stays one agent over the daemon protocol', async () => {
+  await withDaemon(async (socketPath, base) => {
+    const mcp = await MeshClient.open({ socketPath, autostart: false });
+    const hook = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(mcp && hook);
+
+    await mcp.request('register', {
+      sessionId: 'launch-id',
+      provider: 'claude',
+      cwd: base,
+      pid: 98940,
+      own: true,
+    });
+    const claimed = await mcp.request('claim', {
+      sessionId: 'launch-id',
+      patterns: ['engine/**'],
+      mode: 'exclusive',
+    });
+    assert.equal(claimed.ok, true);
+
+    // /clear, /resume and compaction rotate Claude's real session id without
+    // restarting its host or the MCP server. The next transient hook therefore
+    // reports a second real id for the same pid.
+    await hook.request('register', {
+      sessionId: 'rotated-id',
+      provider: 'claude',
+      cwd: base,
+      pid: 98940,
+    });
+    await hook.request('touch', {
+      sessionId: 'rotated-id',
+      activity: 'Edit engine.ts',
+    });
+
+    const who = await mcp.request('who', { cwd: base });
+    const agents = (who.agents ?? []) as Array<Record<string, unknown>>;
+    assert.equal(agents.length, 1, 'the protocol must not expose a split identity');
+    assert.equal(agents[0]?.activity, 'Edit engine.ts', 'the rotated id resolves to the owner');
+
+    const claims = await hook.request('claims', { cwd: base });
+    const rows = (claims.claims ?? []) as Array<Record<string, unknown>>;
+    assert.equal(rows.length, 1, 'the original id claim survives the rotation');
+    assert.equal(rows[0]?.holder, agents[0]?.name);
+
+    // Closing the transient hook must not evict the merged agent. Closing the
+    // lifetime-owning MCP connection still must.
+    hook.close();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const beforeOwnerClose = await mcp.request('who', { cwd: base });
+    assert.equal(((beforeOwnerClose.agents ?? []) as unknown[]).length, 1);
+
+    mcp.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const observer = await MeshClient.open({ socketPath, autostart: false });
+    assert.ok(observer);
+    const afterOwnerClose = await observer.request('who', { cwd: base });
+    assert.equal(((afterOwnerClose.agents ?? []) as unknown[]).length, 0);
+    observer.close();
+  });
+});
+
 test('two genuinely different sessions on one workspace stay two agents', async () => {
   await withDaemon(async (socketPath, base) => {
     const a = await MeshClient.open({ socketPath, autostart: false });

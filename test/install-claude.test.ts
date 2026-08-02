@@ -12,10 +12,24 @@ import {
 import { withMeshNote, MESH_NOTE_BEGIN } from '../src/install/note.ts';
 import { claudePaths, planClaudeInstall, applyClaudeInstall } from '../src/install/claude.ts';
 
-test('mesh installs SessionStart and PreToolUse only', () => {
-  // Every extra event costs 64ms on a path the user feels. PostToolUse adds
-  // nothing PreToolUse does not already report; Stop belongs to Phase 4.
-  assert.deepEqual([...MESH_HOOK_EVENTS], ['SessionStart', 'PreToolUse']);
+test('mesh installs SessionStart, PreToolUse and Stop only', () => {
+  // Every extra per-tool-call event costs 64ms on a path the user feels, so
+  // PostToolUse stays out — it reports nothing PreToolUse does not. Stop is
+  // in because it fires once per turn, and it is the only event that reaches
+  // an agent nobody is typing at.
+  assert.deepEqual([...MESH_HOOK_EVENTS], ['SessionStart', 'PreToolUse', 'Stop']);
+});
+
+test('Stop is installed without a matcher', () => {
+  // Stop has no tool to match on, and both hosts key dispatch off the block
+  // shape. Claude took a stray matcher silently, which is how this went unseen.
+  const hooks = withMeshHooks({}, {
+    nodePath: '/usr/bin/node',
+    entry: '/pkg/dist/cli/index.js',
+    includeMatcher: true,
+  });
+  assert.ok(!('matcher' in (hooks.Stop?.[0] ?? {})), 'Stop block must carry no matcher');
+  assert.equal(hooks.PreToolUse?.[0]?.matcher, '', 'PreToolUse still takes one');
 });
 
 test('meshHookCommand points at the compiled entry with the event', () => {
@@ -47,6 +61,7 @@ test('withMeshHooks leaves other tools hooks untouched', () => {
   const existing = {
     SessionStart: [{ matcher: '', hooks: [{ type: 'command' as const, command: 'cmux hooks x' }] }],
     Stop: [{ matcher: '', hooks: [{ type: 'command' as const, command: 'cmux hooks stop' }] }],
+    PostToolUse: [{ matcher: '', hooks: [{ type: 'command' as const, command: 'cmux hooks post' }] }],
   };
 
   const merged = withMeshHooks(existing, {
@@ -57,7 +72,16 @@ test('withMeshHooks leaves other tools hooks untouched', () => {
 
   assert.equal(merged.SessionStart?.length, 2, 'appended, not replaced');
   assert.match(JSON.stringify(merged.SessionStart), /cmux hooks x/);
-  assert.deepEqual(merged.Stop, existing.Stop, 'an event mesh does not use is untouched');
+  assert.deepEqual(
+    merged.PostToolUse,
+    existing.PostToolUse,
+    'an event mesh does not use is untouched',
+  );
+
+  // Stop is shared ground: cmux and other tools already hook it, and mesh
+  // taking it over rather than joining it would silently disable them.
+  assert.equal(merged.Stop?.length, 2, 'mesh joins Stop, it does not take it');
+  assert.match(JSON.stringify(merged.Stop), /cmux hooks stop/);
 });
 
 test('withMeshHooks is idempotent — running init twice adds one hook, not two', () => {
