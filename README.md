@@ -56,10 +56,11 @@ repoints, it does not duplicate. Preview it first with `mesh init --dry-run`.
 
 Then **restart your agents.** A running session keeps the hooks it started with.
 
-**Codex asks once.** Codex will not run a hook it has not been told to trust,
-so the first launch after `mesh init` prompts you to approve it. Until you do,
-Codex runs no hooks and mesh cannot enforce claims there. `mesh doctor` shows
-the trust state.
+**Codex may ask once.** Under the default approval policy, the first launch
+after `mesh init` prompts you to approve its hooks. Other host policies may run
+them without per-hook approval records. `mesh doctor` reports whether approval
+is recorded; it does not mistake a missing record for proof that hooks are off.
+mesh never writes trust state itself.
 
 ## Commands
 

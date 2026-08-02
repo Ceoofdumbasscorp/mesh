@@ -75,7 +75,7 @@ test('runInit writes nothing on a dry run', () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-test('runInit reports that Codex will ask the user to trust the hook', () => {
+test('runInit reports that Codex approval is not yet recorded', () => {
   const home = homeWith(['.codex']);
 
   const result = runInit({
@@ -108,6 +108,8 @@ test('renderInitSummary names every file written and the next step', () => {
   assert.match(out, /hooks\.json/);
   assert.match(out, /restart/i, 'a running agent does not pick up new hooks');
   assert.match(out, /trust/i, 'the Codex trust prompt is not a surprise');
+  assert.match(out, /may ask/i, 'runtime policy is not inferred from a missing trust record');
+  assert.doesNotMatch(out, /runs no hooks/i);
   assert.doesNotMatch(out, /undefined/);
   rmSync(home, { recursive: true, force: true });
 });

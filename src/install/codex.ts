@@ -79,7 +79,7 @@ function snakeEvent(event: string): string {
 }
 
 /**
- * Whether Codex has recorded approval for the events mesh installs.
+ * Whether Codex has recorded approval for every event mesh installs.
  *
  * Codex stores it as `[hooks.state."<path>:<event>:<i>:<j>"] trusted_hash`,
  * where the hash covers the hook entry itself. mesh cannot compute that hash,
@@ -87,6 +87,9 @@ function snakeEvent(event: string): string {
  * scope the question to the events it installs. Matching the file alone gave a
  * false "approved" on a machine whose hooks.json held only an unrelated
  * SessionStart hook from another tool.
+ *
+ * This is not a runtime probe. A host policy may execute hooks without these
+ * per-entry records, so false means "unconfirmed", not "hooks are off".
  *
  * mesh only ever READS this: approving a hook is the user's decision, and
  * writing the entry would be mesh silently granting itself execution rights.

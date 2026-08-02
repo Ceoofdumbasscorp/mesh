@@ -74,8 +74,9 @@ export function runInit(options: InitOptions): InitResult {
             runner: options.runner,
           })
         : null,
-    // Codex will not run a hook it has not been told to trust, and recording
-    // that approval is the user's decision, never mesh's.
+    // This reports only whether approval is recorded. Some host policies run
+    // hooks without per-entry records; mesh cannot infer runtime behavior here.
+    // Recording approval remains the user's decision, never mesh's.
     trustPending: codex.present && !codexHookTrustRecorded(codexConfig, codex.hooksPath),
   });
 
@@ -112,8 +113,8 @@ export function renderInitSummary(result: InitResult): string {
     }
     if (host.trustPending) {
       lines.push(
-        '    trust      Codex will ask you to approve this hook the next time it starts.',
-        '               Until you do, it runs no hooks and mesh cannot enforce claims.',
+        '    trust      Approval is not recorded for every Codex hook.',
+        '               Codex may ask on restart if its policy requires explicit approval.',
       );
     }
   }

@@ -139,19 +139,21 @@ export function renderDoctor(report: DoctorReport): string {
       : '  codex mcp        not registered — run `mesh init`',
   );
 
-  // The one step mesh cannot take for the user: approving a hook is an
-  // execution grant, so mesh reads this state and never writes it. Say plainly
-  // what is broken and what the keystroke is, because a bare PENDING reads as
-  // a warning to ignore rather than the reason nothing works.
+  // Approval records are evidence, not a runtime probe. Codex may execute hooks
+  // under a host policy that bypasses per-hook approval; that is exactly what
+  // the 2026-08-02 live shakedown observed while config.toml held no records for
+  // mesh's entries. Never turn "not recorded" into the false claim "not
+  // running". mesh also never writes approval state: that grant belongs to the
+  // user.
   if (report.codexHooksTrusted) {
-    lines.push('  codex trust      ok        the hooks are approved');
+    lines.push('  codex trust      ok        approval is recorded for every mesh hook');
   } else {
     lines.push(
-      '  codex trust      PENDING   Codex is running NO mesh hooks — it cannot receive',
-      '                             messages, cannot be woken, and claims are not enforced',
-      '                             there. Restart Codex and approve the hook prompt when it',
-      '                             appears. mesh cannot approve it for you: that would be',
-      '                             mesh granting itself execution rights on your machine.',
+      '  codex trust      UNCONFIRMED  approval is not recorded for every mesh hook',
+      '                               Hooks may still run under the current host policy.',
+      '                               If Codex shows mesh hook activity, no action is needed;',
+      '                               otherwise restart it and approve the hook prompt.',
+      '                               mesh never grants itself execution rights.',
     );
   }
 

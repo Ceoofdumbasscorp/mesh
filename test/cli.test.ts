@@ -132,10 +132,17 @@ test('renderDoctor flags an unbuilt dist, which makes every tool call slower', (
   assert.match(out, /npm run build/);
 });
 
-test('renderDoctor flags a Codex hook the user has not trusted yet', () => {
+test('renderDoctor reports missing trust records without guessing runtime state', () => {
   const out = renderDoctor({ ...healthyReport, codexHooksTrusted: false });
   assert.match(out, /trust/i);
-  assert.match(out, /enforce/i, 'says what is lost until it is trusted');
+  assert.match(out, /unconfirmed/i);
+  assert.match(out, /approval is not recorded/i);
+  assert.match(out, /may still run/i);
+  assert.doesNotMatch(
+    out,
+    /running no mesh hooks/i,
+    'a missing record does not prove hooks are disabled under the host policy',
+  );
 });
 
 test('renderDoctor reports the Codex version, since hook behavior is version-measured', () => {
