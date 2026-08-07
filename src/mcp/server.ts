@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { MeshClient } from '../client.ts';
 import type { WhoAgent } from '../cli/who.ts';
 import { formatDuration } from '../cli/who.ts';
+import { isWorkspaceEnabled } from '../enabled.ts';
+import { resolveWorkspace } from '../workspace.ts';
 
 export interface McpOptions {
   sessionId: string;
@@ -85,6 +87,20 @@ export function describeWho(agents: WhoAgent[]): string {
 }
 
 export async function startMcpServer(options: McpOptions): Promise<void> {
+  // mesh is off unless this workspace was switched on with `mesh on`.
+  //
+  // Serve a real MCP server with zero tools rather than exiting: the host
+  // registered mesh globally and treats a server that dies at startup as a
+  // failure worth reporting. An empty server completes the handshake, offers
+  // the agent nothing, and — because we return before MeshClient.open() —
+  // never autostarts the daemon. A solo project therefore runs no mesh
+  // process and shows no mesh_* tools.
+  if (!isWorkspaceEnabled(resolveWorkspace(options.cwd).root)) {
+    const empty = new McpServer({ name: 'mesh', version: '0.1.0' });
+    await empty.connect(new StdioServerTransport());
+    return;
+  }
+
   const client = await MeshClient.open();
   if (!client) throw new Error('mesh: could not reach or start the daemon');
 

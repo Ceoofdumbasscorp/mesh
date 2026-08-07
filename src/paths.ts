@@ -9,7 +9,15 @@ export interface MeshPaths {
   workspaceDir(key: string): string;
 }
 
-export function meshPaths(home: string = join(homedir(), '.mesh')): MeshPaths {
+/**
+ * MESH_HOME relocates every piece of mesh state — socket, journal, and the
+ * enabled-workspace list — as one unit. Tests rely on that: a gate that could
+ * be checked against a different home than the daemon it guards would prove
+ * nothing.
+ */
+export function meshPaths(
+  home: string = process.env.MESH_HOME ?? join(homedir(), '.mesh'),
+): MeshPaths {
   return {
     home,
     socket: join(home, 'mesh.sock'),

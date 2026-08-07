@@ -1,6 +1,9 @@
 import { basename } from 'node:path';
+import type { Readable } from 'node:stream';
 import { MeshClient } from './client.ts';
 import { shellWriteTargets } from './shell.ts';
+import { isWorkspaceEnabled } from './enabled.ts';
+import { resolveWorkspace } from './workspace.ts';
 
 export interface HookInput {
   hook_event_name?: string;
@@ -26,7 +29,7 @@ export interface InjectedMessage {
  * run deadlocks. destroy() matters as much as the deadline — an open stdin
  * handle keeps the event loop alive well past the point of doing any work.
  */
-export function readStdinWithDeadline(stream: NodeJS.ReadStream, ms: number): Promise<string> {
+export function readStdinWithDeadline(stream: Readable, ms: number): Promise<string> {
   return new Promise((resolve) => {
     let buffer = '';
     let done = false;
@@ -249,7 +252,7 @@ export function buildStopOutput(
  */
 export async function runHook(
   event: string,
-  options: { stdin?: NodeJS.ReadStream; provider?: string } = {},
+  options: { stdin?: Readable; provider?: string } = {},
 ): Promise<Record<string, unknown>> {
   try {
     const raw = await readStdinWithDeadline(options.stdin ?? process.stdin, 400);
@@ -257,6 +260,11 @@ export async function runHook(
     const sessionId = typeof input.session_id === 'string' ? input.session_id : null;
     const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
     if (!sessionId) return {};
+
+    // mesh is off unless this workspace was switched on with `mesh on`. This
+    // is checked before anything else touches the daemon, so in an ordinary
+    // solo project the hook is a file read and a return.
+    if (!isWorkspaceEnabled(resolveWorkspace(cwd).root)) return {};
 
     const provider = options.provider ?? process.env.MESH_PROVIDER ?? 'claude';
     // Never autostart from the hook. This runs before every tool call, and

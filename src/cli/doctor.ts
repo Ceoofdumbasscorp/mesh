@@ -7,6 +7,8 @@ import { distEntryPoint } from '../install/entry.ts';
 import { codexHookTrustRecorded, codexPaths } from '../install/codex.ts';
 import { defaultRunner } from '../install/mcp.ts';
 import type { CommandRunner } from '../install/mcp.ts';
+import { listEnabledWorkspaces } from '../enabled.ts';
+import { resolveWorkspace } from '../workspace.ts';
 
 export interface DoctorReport {
   nodeVersion: string;
@@ -22,6 +24,9 @@ export interface DoctorReport {
   codexMcpRegistered: boolean;
   codexHooksTrusted: boolean;
   codexVersion: string | null;
+  enabledHere: boolean;
+  workspaceRoot: string;
+  enabledCount: number;
 }
 
 function nodeMeetsFloor(version: string): boolean {
@@ -70,10 +75,15 @@ export async function collectDoctorReport(
 
   const entry = distEntryPoint();
   const home = homedir();
+  const workspace = resolveWorkspace(process.cwd());
+  const enabledRoots = listEnabledWorkspaces();
   const codex = codexPaths(home);
   const codexConfig = existsSync(codex.config) ? readFileSync(codex.config, 'utf8') : '';
 
   return {
+    enabledHere: enabledRoots.includes(workspace.root),
+    workspaceRoot: workspace.root,
+    enabledCount: enabledRoots.length,
     nodeVersion: process.version,
     nodeOk: nodeMeetsFloor(process.version),
     daemonReachable,
@@ -96,6 +106,18 @@ export async function collectDoctorReport(
 
 export function renderDoctor(report: DoctorReport): string {
   const lines: string[] = ['mesh doctor', ''];
+
+  // First line, because it decides whether any of the rest is even running.
+  // Everything below reports what is INSTALLED; this reports what is ACTIVE.
+  lines.push(
+    report.enabledHere
+      ? `  mesh here        ON        ${report.workspaceRoot}`
+      : `  mesh here        off       ${report.workspaceRoot} — \`mesh on\` to enable; hooks and tools are inert until then`,
+  );
+  lines.push(
+    `  enabled in       ${report.enabledCount} workspace${report.enabledCount === 1 ? '' : 's'}`,
+    '',
+  );
 
   lines.push(
     report.nodeOk

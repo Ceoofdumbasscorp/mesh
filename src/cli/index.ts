@@ -7,10 +7,17 @@ import { runHook } from '../hook.ts';
 import { renderClaims } from './claims.ts';
 import type { ClaimRow } from './claims.ts';
 import { runWatch, DEFAULT_INTERVAL_MS } from './watch.ts';
+import { enableWorkspace, disableWorkspace, listEnabledWorkspaces } from '../enabled.ts';
+import { resolveWorkspace } from '../workspace.ts';
 
 const USAGE = `mesh — cross-agent collaboration for terminal coding agents
 
+mesh is OFF everywhere until you switch it on in a workspace.
+
 Usage:
+  mesh on         Switch mesh ON in this workspace (restart your agents after)
+  mesh off        Switch mesh OFF here again
+  mesh status     Is mesh on here? Which workspaces is it on in?
   mesh init       Wire mesh into Claude Code and Codex (--dry-run to preview)
   mesh who        List the agents working in this workspace
   mesh claims     Show which agent has claimed which paths
@@ -48,6 +55,47 @@ async function cmdWho(): Promise<number> {
   } finally {
     client.close();
   }
+}
+
+/**
+ * `on` and `off` are the only switches an operator touches. They take effect
+ * for the NEXT agent session: a live agent's MCP server decided at launch
+ * whether it had tools, and cannot grow them mid-session.
+ */
+async function cmdOn(): Promise<number> {
+  const ws = resolveWorkspace(process.cwd());
+  enableWorkspace(ws.root);
+  process.stdout.write(
+    `mesh ON in ${ws.root}\n\n` +
+      `Restart the agents you want meshed — a running session keeps the tools\n` +
+      `it launched with. Everywhere else mesh stays off.\n`,
+  );
+  return 0;
+}
+
+async function cmdOff(): Promise<number> {
+  const ws = resolveWorkspace(process.cwd());
+  disableWorkspace(ws.root);
+  process.stdout.write(
+    `mesh OFF in ${ws.root}\n\n` +
+      `Restart any agent still running here to drop the mesh_* tools.\n` +
+      `Run \`mesh stop\` too if you want the daemon gone now.\n`,
+  );
+  return 0;
+}
+
+async function cmdStatus(): Promise<number> {
+  const ws = resolveWorkspace(process.cwd());
+  const roots = listEnabledWorkspaces();
+  const here = roots.includes(ws.root);
+  const lines = [
+    `here:  ${here ? 'ON' : 'OFF'}  (${ws.root})`,
+    '',
+    roots.length === 0 ? 'mesh is off in every workspace.' : 'mesh is on in:',
+    ...roots.map((r) => `  ${r}`),
+  ];
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return 0;
 }
 
 async function cmdDoctor(): Promise<number> {
@@ -196,6 +244,12 @@ async function cmdHook(event: string | undefined): Promise<number> {
 export async function main(argv: string[]): Promise<number> {
   const command = argv[2];
   switch (command) {
+    case 'on':
+      return cmdOn();
+    case 'off':
+      return cmdOff();
+    case 'status':
+      return cmdStatus();
     case 'who':
       return cmdWho();
     case 'init':

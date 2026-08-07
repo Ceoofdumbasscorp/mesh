@@ -49,6 +49,9 @@ test('renderDoctor reports a healthy environment', () => {
     codexMcpRegistered: true,
     codexHooksTrusted: true,
     codexVersion: 'codex-cli 0.145.0',
+    enabledHere: true,
+    workspaceRoot: '/Users/x/proj',
+    enabledCount: 1,
   });
 
   assert.match(out, /v25\.8\.1/);
@@ -71,6 +74,9 @@ test('renderDoctor flags each problem it finds', () => {
     codexMcpRegistered: false,
     codexHooksTrusted: false,
     codexVersion: null,
+    enabledHere: false,
+    workspaceRoot: '/Users/x/proj',
+    enabledCount: 0,
   });
 
   assert.match(out, /22\.6/, 'states the required version');
@@ -125,6 +131,9 @@ const healthyReport = {
   codexMcpRegistered: true,
   codexHooksTrusted: true,
   codexVersion: 'codex-cli 0.145.0',
+  enabledHere: true,
+  workspaceRoot: '/Users/x/proj',
+  enabledCount: 1,
 };
 
 test('renderDoctor flags an unbuilt dist, which makes every tool call slower', () => {
