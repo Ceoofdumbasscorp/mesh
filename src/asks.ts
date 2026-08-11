@@ -28,16 +28,20 @@ export interface AskRegistryOptions {
   maxPerMinute?: number;
   /** Unanswered asks one agent may be holding at once. */
   maxOpenPerAgent?: number;
+  /** Global ceiling independent of fabricated sender identities. */
+  maxTotal?: number;
 }
 
 const DEFAULT_MAX_PER_MINUTE = 10;
 const DEFAULT_MAX_OPEN_PER_AGENT = 5;
+const DEFAULT_MAX_TOTAL = 1024;
 const RATE_WINDOW_MS = 60_000;
 
 export class AskRegistry {
   #clock: Clock;
   #maxPerMinute: number;
   #maxOpenPerAgent: number;
+  #maxTotal: number;
   #asks = new Map<number, Ask>();
   #recent = new Map<string, number[]>();
   #nextId = 1;
@@ -46,6 +50,7 @@ export class AskRegistry {
     this.#clock = options.clock;
     this.#maxPerMinute = options.maxPerMinute ?? DEFAULT_MAX_PER_MINUTE;
     this.#maxOpenPerAgent = options.maxOpenPerAgent ?? DEFAULT_MAX_OPEN_PER_AGENT;
+    this.#maxTotal = options.maxTotal ?? DEFAULT_MAX_TOTAL;
   }
 
   #pending(): Ask[] {
@@ -81,12 +86,29 @@ export class AskRegistry {
 
   #rateExceeded(from: string): boolean {
     const now = this.#clock();
+    for (const [sender, times] of this.#recent) {
+      const live = times.filter((at) => now - at < RATE_WINDOW_MS);
+      if (live.length === 0) this.#recent.delete(sender);
+      else this.#recent.set(sender, live);
+    }
+    const newSender = !this.#recent.has(from);
     const recent = (this.#recent.get(from) ?? []).filter((at) => now - at < RATE_WINDOW_MS);
+    if (newSender && this.#recent.size >= 1024) return true;
     this.#recent.set(from, recent);
     return recent.length >= this.#maxPerMinute;
   }
 
   create(input: { from: string; to: string; body: string; timeoutMs: number }): CreateResult {
+    for (const [id, ask] of this.#asks) {
+      if (ask.state !== 'pending') this.#asks.delete(id);
+    }
+    if (this.#asks.size >= this.#maxTotal) {
+      return {
+        ok: false,
+        code: 'too-many-open',
+        error: `Global ask quota exceeded (${this.#maxTotal})`,
+      };
+    }
     if (input.from === input.to) {
       return { ok: false, code: 'self', error: 'An agent cannot ask itself' };
     }

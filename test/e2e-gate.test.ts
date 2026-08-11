@@ -8,6 +8,7 @@ import { MeshServer, createDaemonState } from '../src/daemon/server.ts';
 import { MeshClient } from '../src/client.ts';
 import { runHook } from '../src/hook.ts';
 import { enableWorkspace, disableWorkspace } from '../src/enabled.ts';
+import { writeSessionCapability } from '../src/session-capability.ts';
 
 /**
  * The gate's whole promise is "mesh does nothing here". Proving that with a
@@ -41,9 +42,11 @@ async function withGatedDaemon<T>(
   });
   const me = await MeshClient.open({ socketPath: join(home, 'mesh.sock'), autostart: false });
   assert.ok(me, 'recipient client should connect');
-  await me.request('register', {
-    sessionId: 'my-session', provider: 'claude', cwd: workspace, own: true,
+  const registered = await me.request('register', {
+    sessionId: 'my-session', provider: 'claude', cwd: workspace, pid: process.ppid, own: true,
   });
+  assert.equal(typeof registered.capability, 'string');
+  writeSessionCapability(process.ppid, registered.capability as string);
   await peer.request('send', { to: 'claude-1', body: 'MAIL-IS-WAITING' });
 
   const stdinFor = (event: string): Readable =>

@@ -34,6 +34,23 @@ test('renderWho shows a placeholder when an agent has no role', () => {
   assert.doesNotMatch(out, /null/, 'null must never reach the user');
 });
 
+test('renderWho escapes control characters in every daemon-supplied field', () => {
+  const out = renderWho({
+    workspaceLabel: 'repo\u001b]52;c;bad\u0007',
+    agents: [{
+      name: 'agent',
+      provider: 'x',
+      role: 'back\nend',
+      status: 'working',
+      activity: '\u001b[2Jspoof',
+      idleMs: 0,
+    }],
+  });
+  assert.doesNotMatch(out, /[\u0007\u001b]/);
+  assert.match(out, /\\u001b/);
+  assert.match(out, /\\n/);
+});
+
 test('renderDoctor reports a healthy environment', () => {
   const out = renderDoctor({
     nodeVersion: 'v25.8.1',
@@ -90,6 +107,14 @@ import { renderClaims } from '../src/cli/claims.ts';
 test('renderClaims explains an empty table rather than printing a bare header', () => {
   const out = renderClaims([]);
   assert.match(out, /No claims/i);
+});
+
+test('renderClaims escapes terminal controls in claim patterns', () => {
+  const out = renderClaims([
+    { id: 1, holder: 'agent', patterns: ['safe/**\u001b[2J'], mode: 'exclusive', expiresInMs: 1000 },
+  ]);
+  assert.doesNotMatch(out, /\u001b/);
+  assert.match(out, /\\u001b/);
 });
 
 test('renderClaims lists holder, patterns, mode, and remaining time', () => {

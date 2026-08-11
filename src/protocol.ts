@@ -36,13 +36,20 @@ export type FrameDecoder = (chunk: string | Buffer) => unknown[];
 export function createFrameDecoder(): FrameDecoder {
   let buffer = '';
   let closed = false;
+  const decoder = new StringDecoder('utf8');
 
   return function decode(chunk: string | Buffer): unknown[] {
     if (closed) throw new Error('Frame decoder is closed after a protocol error');
 
-    buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+    if (Buffer.byteLength(buffer, 'utf8') + bytes.length > MAX_FRAME_BYTES) {
+      closed = true;
+      buffer = '';
+      throw new Error(`Frame exceeds ${MAX_FRAME_BYTES} bytes`);
+    }
+    buffer += decoder.write(bytes);
 
-    if (buffer.length > MAX_FRAME_BYTES) {
+    if (Buffer.byteLength(buffer, 'utf8') > MAX_FRAME_BYTES) {
       closed = true;
       buffer = '';
       throw new Error(`Frame exceeds ${MAX_FRAME_BYTES} bytes`);
@@ -66,3 +73,4 @@ export function createFrameDecoder(): FrameDecoder {
     return frames;
   };
 }
+import { StringDecoder } from 'node:string_decoder';

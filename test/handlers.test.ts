@@ -94,6 +94,80 @@ test('register requires sessionId and provider', async () => {
   }
 });
 
+test('request sessionId cannot override the connection-bound caller', async () => {
+  const { state, cleanup } = setup();
+  try {
+    const cwd = process.cwd();
+    const a: ConnectionContext = { sessionId: null, owns: false };
+    const b: ConnectionContext = { sessionId: null, owns: false };
+    await handleRequest(state, a, { id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd });
+    await handleRequest(state, b, { id: 2, op: 'register', sessionId: 'sb', provider: 'codex', cwd });
+
+    const sent = await handleRequest(state, b, {
+      id: 3, op: 'send', sessionId: 'sa', to: 'claude-1', body: 'from b',
+    });
+    assert.equal(sent.ok, true);
+    const inbox = await handleRequest(state, a, { id: 4, op: 'inbox' });
+    const messages = inbox.messages as Array<Record<string, unknown>>;
+    assert.equal(messages[0]?.from, 'codex-1');
+
+    const stolen = await handleRequest(state, b, { id: 5, op: 'inbox', sessionId: 'sa' });
+    assert.deepEqual(stolen.messages, [], 'b cannot select and drain a mailbox');
+  } finally {
+    cleanup();
+  }
+});
+
+test('attaching to an owned session requires its registration capability', async () => {
+  const { state, cleanup } = setup();
+  try {
+    const cwd = process.cwd();
+    const owner: ConnectionContext = { sessionId: null, owns: false };
+    const hook: ConnectionContext = { sessionId: null, owns: false };
+    const registered = await handleRequest(state, owner, {
+      id: 1, op: 'register', sessionId: 'owned', provider: 'claude', cwd, pid: 123, own: true,
+    });
+    assert.equal(typeof registered.capability, 'string');
+
+    const denied = await handleRequest(state, hook, {
+      id: 2, op: 'register', sessionId: 'owned', provider: 'claude', cwd, pid: 123,
+    });
+    assert.equal(denied.ok, false);
+
+    const allowed = await handleRequest(state, hook, {
+      id: 3,
+      op: 'register',
+      sessionId: 'owned',
+      provider: 'claude',
+      cwd,
+      pid: 123,
+      capability: registered.capability,
+    });
+    assert.equal(allowed.ok, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test('one connection cannot rebind from its original agent to another session', async () => {
+  const { state, cleanup } = setup();
+  try {
+    const cwd = process.cwd();
+    const connection: ConnectionContext = { sessionId: null, owns: false };
+    await handleRequest(state, connection, {
+      id: 1, op: 'register', sessionId: 'first', provider: 'claude', cwd,
+    });
+    const rebound = await handleRequest(state, connection, {
+      id: 2, op: 'register', sessionId: 'second', provider: 'codex', cwd,
+    });
+    assert.equal(rebound.ok, false);
+    assert.match(String(rebound.error), /already bound/i);
+    assert.equal(connection.sessionId, 'first');
+  } finally {
+    cleanup();
+  }
+});
+
 test('who lists peers in the caller workspace with status', async () => {
   const { state, ctx, cleanup } = setup();
   try {

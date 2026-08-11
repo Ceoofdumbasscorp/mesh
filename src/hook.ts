@@ -1,7 +1,8 @@
 import { basename } from 'node:path';
 import type { Readable } from 'node:stream';
 import { MeshClient } from './client.ts';
-import { shellWriteTargets } from './shell.ts';
+import { analyzeShellCommand, shellWriteTargets } from './shell.ts';
+import { readSessionCapability } from './session-capability.ts';
 import { isWorkspaceEnabled } from './enabled.ts';
 import { resolveWorkspace } from './workspace.ts';
 
@@ -66,6 +67,13 @@ export function parseHookInput(raw: string): HookInput | null {
   }
 }
 
+/** Host adapters use either `command` or `cmd` for a shell invocation. */
+function commandOf(args: Record<string, unknown>): string | null {
+  if (typeof args.command === 'string' && args.command.length > 0) return args.command;
+  if (typeof args.cmd === 'string' && args.cmd.length > 0) return args.cmd;
+  return null;
+}
+
 /** A short human-readable description of what the agent is doing right now. */
 export function summarizeTool(input: HookInput): string | null {
   const tool = typeof input.tool_name === 'string' ? input.tool_name : null;
@@ -76,8 +84,8 @@ export function summarizeTool(input: HookInput): string | null {
   if (typeof filePath === 'string' && filePath.length > 0) {
     return `${tool} ${basename(filePath)}`;
   }
-  const command = args.command;
-  if (typeof command === 'string' && command.length > 0) {
+  const command = commandOf(args);
+  if (command) {
     // First two words only: enough to identify the command, without dragging
     // a full shell line into a peer's context.
     return `${tool} ${command.trim().split(/\s+/).slice(0, 2).join(' ')}`;
@@ -180,8 +188,8 @@ export function targetPathsOf(input: HookInput): string[] {
   // carries its command as a string, so this covers Claude's Bash and Codex's
   // shell without hardcoding either name — and without it, `echo x > file`
   // bypassed a claim the design promises is enforced rather than advised.
-  const command = args.command;
-  if (typeof command === 'string' && command.length > 0) {
+  const command = commandOf(args);
+  if (command) {
     return shellWriteTargets(command);
   }
 
@@ -277,20 +285,34 @@ export async function runHook(
     try {
       // Deliberately no `own: true` — the hook's connection is transient and
       // closes after every tool call. Owning it would evict the agent.
-      await client.request('register', { sessionId, provider, cwd, pid: process.ppid });
+      const capability = readSessionCapability(process.ppid);
+      const registered = await client.request('register', {
+        sessionId,
+        provider,
+        cwd,
+        pid: process.ppid,
+        ...(capability ? { capability } : {}),
+      });
+      if (!registered.ok) return {};
 
       if (event === 'SessionStart') return {};
 
       const activity = summarizeTool(input);
-      await client.request('touch', { sessionId, ...(activity ? { activity } : {}) });
+      await client.request('touch', { ...(activity ? { activity } : {}) });
 
       // Enforcement: only write-capable tools, and only when a path is present.
       const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
-      if (event === 'PreToolUse' && WRITE_TOOLS.has(tool)) {
+      const command = commandOf(input.tool_input ?? {});
+      if (
+        event === 'PreToolUse' &&
+        (WRITE_TOOLS.has(tool) || command !== null)
+      ) {
         // A single call can touch several files; one claimed path is enough
         // to block the whole call, since patches apply atomically.
-        for (const path of targetPathsOf(input)) {
-          const verdict = await client.request('check', { sessionId, path });
+        const analysis = command ? analyzeShellCommand(command) : null;
+        const paths = analysis && !analysis.complete ? [...analysis.targets, '.'] : targetPathsOf(input);
+        for (const path of [...new Set(paths)]) {
+          const verdict = await client.request('check', { path, cwd });
           if (verdict.ok && verdict.allowed === false && typeof verdict.reason === 'string') {
             return buildDenyOutput(event, verdict.reason);
           }
@@ -301,10 +323,7 @@ export async function runHook(
       // stay queued for the next tool call — a destructive read followed by a
       // "do not wake" decision would swallow the message entirely.
       const peeking = event === 'Stop';
-      const inbox = await client.request('inbox', {
-        sessionId,
-        ...(peeking ? { drain: false } : {}),
-      });
+      const inbox = await client.request('inbox', { ...(peeking ? { drain: false } : {}) });
       if (!inbox.ok) return {};
       const messages = (inbox.messages ?? []) as InjectedMessage[];
 
@@ -312,7 +331,7 @@ export async function runHook(
         const stopHookActive = input.stop_hook_active === true;
         const decision = buildStopOutput(messages, stopHookActive);
         // Only consume the mail once it is certain to reach the agent.
-        if (decision.decision === 'block') await client.request('inbox', { sessionId });
+        if (decision.decision === 'block') await client.request('inbox');
         return decision;
       }
 

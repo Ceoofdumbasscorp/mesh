@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { testClock } from '../src/clock.ts';
 import { AskRegistry } from '../src/asks.ts';
+import type { AskRegistryOptions } from '../src/asks.ts';
 
-function setup(overrides: { maxPerMinute?: number; maxOpenPerAgent?: number } = {}) {
+function setup(overrides: Omit<AskRegistryOptions, 'clock'> = {}) {
   const clock = testClock(1000);
   return { clock, asks: new AskRegistry({ clock: clock.now, ...overrides }) };
 }
@@ -169,4 +170,12 @@ test('caps how many open asks one agent may be holding', () => {
   assert.equal(third.ok, false);
   if (third.ok) return;
   assert.equal(third.code, 'too-many-open');
+});
+
+test('ask storage has a global ceiling independent of sender identity', () => {
+  const { asks } = setup({ maxTotal: 1, maxOpenPerAgent: 10, maxPerMinute: 10 });
+  assert.equal(asks.create({ from: 'a', to: 'b', body: 'one?', timeoutMs: 1000 }).ok, true);
+  const second = asks.create({ from: 'c', to: 'd', body: 'two?', timeoutMs: 1000 });
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.match(second.error, /global ask quota/i);
 });

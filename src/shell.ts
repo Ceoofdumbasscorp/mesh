@@ -8,10 +8,10 @@
  * blocked, do not work around it" and then finding an unblocked route is
  * exactly the situation this closes.
  *
- * Deliberately conservative in one direction only: a pattern we fail to
- * recognize means the command proceeds, which is the behavior that already
- * existed. A path we flag is merely *checked* — it is blocked only if another
- * agent actually holds a claim on it.
+ * Deliberately conservative: a pattern we recognize yields exact paths, while
+ * unresolved or unrecognized mutation syntax marks the analysis incomplete so
+ * the hook checks the whole workspace. A path is blocked only if another agent
+ * actually holds a claim on it.
  */
 
 /** Commands whose last argument is the file they create or overwrite. */
@@ -19,6 +19,18 @@ const LAST_ARG_WRITERS = new Set(['mv', 'cp', 'install', 'ln', 'truncate', 'touc
 
 /** Commands where every non-flag argument is a target. */
 const ALL_ARG_WRITERS = new Set(['rm', 'unlink', 'shred']);
+
+/** Programs whose ordinary form does not mutate the filesystem. */
+const READ_ONLY_PROGRAMS = new Set([
+  'cat', 'echo', 'printf', 'pwd', 'ls', 'rg', 'grep', 'head', 'tail', 'wc',
+  'cut', 'sort', 'uniq', 'tr', 'which', 'type', 'true', 'false', 'test', '[',
+]);
+
+export interface ShellWriteAnalysis {
+  targets: string[];
+  /** False means the hook must conservatively check the whole workspace. */
+  complete: boolean;
+}
 
 /**
  * `>` and `>>`, with an optional file descriptor, not `>&`. Also catches the
@@ -63,12 +75,17 @@ function programOf(argv: string[]): string {
 }
 
 /** Every path this command line would create, overwrite, or delete. */
-export function shellWriteTargets(command: string): string[] {
+export function analyzeShellCommand(command: string): ShellWriteAnalysis {
   const targets: string[] = [];
+  let complete = !/[`$][({A-Za-z_]/.test(command);
 
   for (const match of command.matchAll(REDIRECT)) {
     const target = match[1];
-    if (target) targets.push(normalize(unquote(target)));
+    if (target) {
+      const unquoted = normalize(unquote(target));
+      if (/[$`]/.test(unquoted)) complete = false;
+      else targets.push(unquoted);
+    }
   }
 
   for (const segment of segmentsOf(command)) {
@@ -93,8 +110,11 @@ export function shellWriteTargets(command: string): string[] {
     }
 
     if (program === 'sed' && args.some((arg) => arg === '-i' || arg.startsWith('-i'))) {
-      const last = args.filter((arg) => !isFlag(arg)).at(-1);
-      if (last) targets.push(normalize(last));
+      const iIndex = args.findIndex((arg) => arg === '-i' || arg.startsWith('-i'));
+      const afterI = args.slice(iIndex + 1);
+      if (args[iIndex] === '-i' && afterI[0] === '') afterI.shift();
+      const positional = afterI.filter((arg) => !isFlag(arg));
+      for (const file of positional.slice(1)) targets.push(normalize(file));
       continue;
     }
 
@@ -105,13 +125,32 @@ export function shellWriteTargets(command: string): string[] {
 
     if (LAST_ARG_WRITERS.has(program)) {
       const positional = args.filter((arg) => !isFlag(arg));
-      const last = positional.at(-1);
+      const targetDirIndex = args.findIndex((arg) => arg === '-t' || arg === '--target-directory');
+      const equalsTarget = args.find((arg) => arg.startsWith('--target-directory='));
+      const compactTarget = args.find((arg) => arg.startsWith('-t') && arg.length > 2);
+      const last = targetDirIndex >= 0
+        ? args[targetDirIndex + 1]
+        : equalsTarget?.slice(equalsTarget.indexOf('=') + 1) ?? compactTarget?.slice(2) ?? positional.at(-1);
       // `mv a b` writes b; `touch a` writes a. Either way it is the last one.
       if (last) targets.push(normalize(last));
       continue;
     }
+
+    if (program === 'git') {
+      const subcommand = args.find((arg) => !isFlag(arg));
+      if (!subcommand || !new Set(['status', 'diff', 'log', 'show', 'grep', 'rev-parse', 'branch']).has(subcommand)) {
+        complete = false;
+      }
+      continue;
+    }
+
+    if (!READ_ONLY_PROGRAMS.has(program) && program !== '') complete = false;
   }
 
   // Order-preserving dedupe: the same file named twice is still one check.
-  return [...new Set(targets.filter((target) => target.length > 0))];
+  return { targets: [...new Set(targets.filter((target) => target.length > 0))], complete };
+}
+
+export function shellWriteTargets(command: string): string[] {
+  return analyzeShellCommand(command).targets;
 }

@@ -30,20 +30,28 @@ function pad(value: string, width: number): string {
 }
 
 export function renderWho(payload: WhoPayload): string {
-  const lines: string[] = [`workspace: ${payload.workspaceLabel}`];
+  const agents = payload.agents.map((agent) => ({
+    ...agent,
+    name: terminalSafe(agent.name),
+    role: agent.role === null ? null : terminalSafe(agent.role),
+    status: terminalSafe(agent.status),
+    activity: agent.activity === null ? null : terminalSafe(agent.activity),
+    waitingOn: agent.waitingOn?.map(terminalSafe),
+  }));
+  const lines: string[] = [`workspace: ${terminalSafe(payload.workspaceLabel)}`];
 
-  if (payload.agents.length === 0) {
+  if (agents.length === 0) {
     lines.push('');
     lines.push('No agents registered here yet.');
     lines.push('Agents join automatically once mesh hooks are installed (`mesh init`).');
     return lines.join('\n');
   }
 
-  const nameWidth = Math.max(...payload.agents.map((a) => a.name.length), 6);
-  const roleWidth = Math.max(...payload.agents.map((a) => (a.role ?? '—').length), 4);
+  const nameWidth = Math.max(...agents.map((a) => a.name.length), 6);
+  const roleWidth = Math.max(...agents.map((a) => (a.role ?? '—').length), 4);
 
   lines.push('');
-  for (const agent of payload.agents) {
+  for (const agent of agents) {
     const activity = agent.activity ?? (agent.status === 'idle' ? 'idle' : 'starting up');
     lines.push(
       `  ${pad(agent.name, nameWidth)}  ${pad(agent.role ?? '—', roleWidth)}  ` +
@@ -52,3 +60,4 @@ export function renderWho(payload: WhoPayload): string {
   }
   return lines.join('\n');
 }
+import { terminalSafe } from '../terminal.ts';

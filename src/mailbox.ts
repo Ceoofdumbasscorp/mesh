@@ -40,14 +40,30 @@ export class Mailbox {
   #clock: Clock;
   #queues = new Map<string, Envelope[]>();
   #nextId = 1;
+  #totalMessages = 0;
+  #maxMessagesPerRecipient: number;
+  #maxMessagesTotal: number;
 
-  constructor(options: { clock: Clock }) {
+  constructor(options: {
+    clock: Clock;
+    maxMessagesPerRecipient?: number;
+    maxMessagesTotal?: number;
+  }) {
     this.#clock = options.clock;
+    this.#maxMessagesPerRecipient = options.maxMessagesPerRecipient ?? 128;
+    this.#maxMessagesTotal = options.maxMessagesTotal ?? 2048;
   }
 
   deliver(input: DeliverInput): Envelope {
     // Validate before mutating: a rejected message must leave no trace.
     const body = validateBody(input.body);
+    const queue = this.#queues.get(input.to);
+    if ((queue?.length ?? 0) >= this.#maxMessagesPerRecipient) {
+      throw new RangeError(`Mailbox quota exceeded for ${input.to}`);
+    }
+    if (this.#totalMessages >= this.#maxMessagesTotal) {
+      throw new RangeError('Global mailbox quota exceeded');
+    }
     const envelope: Envelope = {
       id: this.#nextId++,
       kind: input.kind,
@@ -57,9 +73,9 @@ export class Mailbox {
       at: this.#clock(),
       askId: input.askId ?? null,
     };
-    const queue = this.#queues.get(input.to);
     if (queue) queue.push(envelope);
     else this.#queues.set(input.to, [envelope]);
+    this.#totalMessages += 1;
     return envelope;
   }
 
@@ -70,7 +86,8 @@ export class Mailbox {
   drain(agent: string): Envelope[] {
     const queue = this.#queues.get(agent);
     if (!queue || queue.length === 0) return [];
-    this.#queues.set(agent, []);
+    this.#queues.delete(agent);
+    this.#totalMessages -= queue.length;
     return queue;
   }
 
@@ -79,6 +96,8 @@ export class Mailbox {
   }
 
   clear(agent: string): void {
-    this.#queues.set(agent, []);
+    const queue = this.#queues.get(agent);
+    if (queue) this.#totalMessages -= queue.length;
+    this.#queues.delete(agent);
   }
 }

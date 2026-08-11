@@ -19,6 +19,7 @@ test('* matches within one segment only', () => {
 });
 
 test('** matches across segments', () => {
+  assert.equal(matchGlob('src/**', 'src'), true, 'a recursive claim protects its directory');
   assert.equal(matchGlob('src/**', 'src/app.ts'), true);
   assert.equal(matchGlob('src/**', 'src/deep/nested/app.ts'), true);
   assert.equal(matchGlob('src/**/*.ts', 'src/deep/app.ts'), true);

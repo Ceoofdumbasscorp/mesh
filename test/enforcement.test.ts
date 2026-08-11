@@ -111,6 +111,37 @@ test('check accepts an absolute path and resolves it against the workspace', asy
   }
 });
 
+test('check canonicalizes dot segments and blocks workspace-root directory operations', async () => {
+  const { base, state, cleanup } = setup();
+  try {
+    const { a, b } = await join2(state, base);
+    await handleRequest(state, b, { id: 2, op: 'claim', patterns: ['server/**'] });
+
+    const dotted = await handleRequest(state, a, {
+      id: 3, op: 'check', cwd: base, path: 'tmp/../server/api.ts',
+    });
+    assert.equal(dotted.allowed, false);
+
+    const ancestor = await handleRequest(state, a, { id: 4, op: 'check', cwd: base, path: 'server' });
+    assert.equal(ancestor.allowed, false, 'rm -rf server must overlap server/**');
+  } finally {
+    cleanup();
+  }
+});
+
+test('claim patterns reject absolute and traversal forms', async () => {
+  const { base, state, cleanup } = setup();
+  try {
+    const { b } = await join2(state, base);
+    for (const pattern of ['/tmp/**', '../server/**', 'server/../app/**']) {
+      const res = await handleRequest(state, b, { id: 2, op: 'claim', patterns: [pattern] });
+      assert.equal(res.ok, false, pattern);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test('an overlapping claim is refused and names the holder', async () => {
   const { base, state, cleanup } = setup();
   try {
@@ -221,6 +252,13 @@ test('a shell redirect at a claimed path is blocked like any other edit', () => 
     ['server/api.ts'],
   );
   assert.equal(WRITE_TOOLS.has('Bash'), true);
+});
+
+test('a shell host using a cmd field exposes its write targets', () => {
+  assert.deepEqual(
+    targetPathsOf({ tool_name: 'exec_command', tool_input: { cmd: 'echo x > server/api.ts' } }),
+    ['server/api.ts'],
+  );
 });
 
 test('a read-only shell command produces no paths to check', () => {

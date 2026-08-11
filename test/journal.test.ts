@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testClock } from '../src/clock.ts';
@@ -38,6 +38,19 @@ test('ensureMeshHome is idempotent', () => {
     ensureMeshHome(paths);
     ensureMeshHome(paths);
     assert.ok(statSync(paths.home).isDirectory());
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('ensureMeshHome repairs a permissive existing directory', () => {
+  const base = scratch();
+  try {
+    const paths = meshPaths(join(base, '.mesh'));
+    ensureMeshHome(paths);
+    chmodSync(paths.home, 0o755);
+    ensureMeshHome(paths);
+    assert.equal(statSync(paths.home).mode & 0o777, 0o700);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -98,6 +111,7 @@ test('append writes one line per entry', () => {
 
     const lines = readFileSync(file, 'utf8').trim().split('\n');
     assert.equal(lines.length, 2);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

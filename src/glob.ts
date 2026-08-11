@@ -30,6 +30,7 @@ export function globToRegExp(pattern: string): RegExp {
 }
 
 export function matchGlob(pattern: string, path: string): boolean {
+  if (pattern.endsWith('/**') && path === pattern.slice(0, -3)) return true;
   if (globToRegExp(pattern).test(path)) return true;
   // A wildcard-free pattern naming a directory covers everything beneath it:
   // claiming `src` should not require typing `src/**`. The trailing slash is

@@ -17,6 +17,8 @@ export interface RegisterInput {
    * recognizable; see `#twinFor`.
    */
   owns?: boolean;
+  /** Bearer capability required by transient connections attaching to an owner. */
+  capability?: string;
 }
 
 export interface Agent {
@@ -32,9 +34,11 @@ export interface Agent {
   activity: string | null;
   /** Whether a lifetime-owning connection ever registered this agent. */
   owned: boolean;
+  /** Never exposed through AgentView or daemon status responses. */
+  capability: string | null;
 }
 
-export interface AgentView extends Agent {
+export interface AgentView extends Omit<Agent, 'capability'> {
   status: AgentStatus;
   idleMs: number;
 }
@@ -43,9 +47,15 @@ export interface RegistryOptions {
   clock: Clock;
   /** Silence beyond this is reported as idle. */
   idleAfterMs?: number;
+  maxAgents?: number;
+  maxWorkspaces?: number;
+  maxAliases?: number;
 }
 
 const DEFAULT_IDLE_AFTER_MS = 60_000;
+const DEFAULT_MAX_AGENTS = 128;
+const DEFAULT_MAX_WORKSPACES = 256;
+const DEFAULT_MAX_ALIASES = 4096;
 
 /**
  * The id the MCP server invents when its host does not give it one.
@@ -62,6 +72,9 @@ export function isProvisionalSessionId(sessionId: string): boolean {
 export class Registry {
   #clock: Clock;
   #idleAfterMs: number;
+  #maxAgents: number;
+  #maxWorkspaces: number;
+  #maxAliases: number;
   #agents = new Map<string, Agent>();
   #order: string[] = [];
   #names = new Map<string, NameAllocator>();
@@ -71,11 +84,17 @@ export class Registry {
   constructor(options: RegistryOptions) {
     this.#clock = options.clock;
     this.#idleAfterMs = options.idleAfterMs ?? DEFAULT_IDLE_AFTER_MS;
+    this.#maxAgents = options.maxAgents ?? DEFAULT_MAX_AGENTS;
+    this.#maxWorkspaces = options.maxWorkspaces ?? DEFAULT_MAX_WORKSPACES;
+    this.#maxAliases = options.maxAliases ?? DEFAULT_MAX_ALIASES;
   }
 
   #allocatorFor(workspaceRoot: string): NameAllocator {
     let allocator = this.#names.get(workspaceRoot);
     if (!allocator) {
+      if (this.#names.size >= this.#maxWorkspaces) {
+        throw new Error(`workspace registry quota exceeded (${this.#maxWorkspaces})`);
+      }
       allocator = new NameAllocator();
       this.#names.set(workspaceRoot, allocator);
     }
@@ -124,9 +143,11 @@ export class Registry {
    * would strand both.
    */
   #adopt(twin: Agent, input: RegisterInput, now: number): Agent {
+    if (this.#aliases.size >= this.#maxAliases) throw new Error('session alias quota exceeded');
     twin.lastSeen = now;
     if (input.role !== undefined) twin.role = input.role;
     if (input.owns) twin.owned = true;
+    if (input.owns && input.capability) twin.capability = input.capability;
 
     if (isProvisionalSessionId(twin.sessionId)) {
       // The real id wins. The provisional one becomes an alias, because the
@@ -152,12 +173,16 @@ export class Registry {
     // and both paths register. Neither should mint a second agent.
     const existing = this.#agents.get(sessionId);
     if (existing) {
+      if (existing.owned && existing.capability && input.capability !== existing.capability) {
+        throw new Error('registration capability is required for this session');
+      }
       existing.lastSeen = now;
       if (input.role !== undefined) existing.role = input.role;
       if (input.pid !== undefined) existing.pid = input.pid;
       // Sticky, like ctx.owns on the connection: a later hook register must not
       // downgrade an agent the MCP server already claimed.
       if (input.owns) existing.owned = true;
+      if (input.owns && input.capability) existing.capability = input.capability;
       return existing;
     }
 
@@ -174,7 +199,16 @@ export class Registry {
             input.sessionId,
             input.owns === true,
           );
-    if (twin) return this.#adopt(twin, input, now);
+    if (twin) {
+      if (twin.owned && twin.capability && input.capability !== twin.capability) {
+        throw new Error('registration capability is required for this session');
+      }
+      return this.#adopt(twin, input, now);
+    }
+
+    if (this.#agents.size >= this.#maxAgents) {
+      throw new Error(`agent registry quota exceeded (${this.#maxAgents})`);
+    }
 
     const agent: Agent = {
       name: this.#allocatorFor(input.workspace.root).allocate(input.provider),
@@ -188,6 +222,7 @@ export class Registry {
       lastSeen: now,
       activity: null,
       owned: input.owns === true,
+      capability: input.capability ?? null,
     };
 
     this.#agents.set(agent.sessionId, agent);
@@ -250,8 +285,9 @@ export class Registry {
 
   #view(agent: Agent): AgentView {
     const idleMs = this.#clock() - agent.lastSeen;
+    const { capability: _capability, ...publicAgent } = agent;
     return {
-      ...agent,
+      ...publicAgent,
       idleMs,
       status: idleMs > this.#idleAfterMs ? 'idle' : 'working',
     };

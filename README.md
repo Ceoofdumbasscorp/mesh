@@ -1,4 +1,10 @@
-# mesh
+# The MESH CLI
+
+<p align="center">
+  <img src="assets/mesh-cli-hero.png" alt="The MESH CLI — AI coding agents connected through a luminous collaborative mesh" width="100%">
+</p>
+
+<p align="center"><strong>Make your AI coding agents work as a team.</strong></p>
 
 Two coding agents in two terminal windows, working on one project, cannot see
 each other. They overwrite each other's files and the only channel between them
@@ -26,7 +32,8 @@ workspace: leadops-v2
 
 Enforcement covers the structured edit tools *and* the shell — `Write`, `Edit`,
 `apply_patch`, and `echo x > file`, `tee`, `sed -i`, `mv`, `cp`, `rm`. An agent
-that decides to route around a claim finds the same wall.
+that uses a shell form mesh cannot resolve is conservatively checked against
+the whole workspace while another agent holds a claim.
 
 A blocked edit reads like this, and is written for the agent to act on:
 
@@ -152,9 +159,10 @@ floor. `npm run bench:hook` fails above 90ms so it cannot silently regress.
 **Shell enforcement is pattern-based, not a sandbox.** mesh reads a shell
 command for the ways files actually get written — redirections, `tee`,
 `sed -i`, `mv`/`cp`/`rm`, `dd of=` — and checks those paths against the claim
-table. It is deliberately conservative: an exotic construction it does not
-recognize proceeds rather than being blocked on a guess. Claims are a
-coordination mechanism between cooperating agents, not a security boundary.
+table. When it cannot prove that it found every target, it checks the workspace
+root, which blocks the command if another agent has any exclusive claim. Claims
+remain a coordination mechanism between agents under one OS account, not an OS
+sandbox; daemon or hook failure still follows the fail-open behavior below.
 
 ## Failure behavior
 

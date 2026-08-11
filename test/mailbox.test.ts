@@ -91,3 +91,15 @@ test('clear empties one recipient only', () => {
   assert.equal(box.pendingCount('b'), 0);
   assert.equal(box.pendingCount('c'), 1);
 });
+
+test('mailbox quotas reject aggregate queue growth', () => {
+  const box = new Mailbox({ clock: testClock().now, maxMessagesPerRecipient: 2, maxMessagesTotal: 2 });
+  box.deliver({ kind: 'message', from: 'a', to: 'b', body: 'one' });
+  box.deliver({ kind: 'message', from: 'a', to: 'b', body: 'two' });
+  assert.throws(
+    () => box.deliver({ kind: 'message', from: 'a', to: 'b', body: 'three' }),
+    /quota/i,
+  );
+  box.drain('b');
+  assert.doesNotThrow(() => box.deliver({ kind: 'message', from: 'a', to: 'b', body: 'after drain' }));
+});

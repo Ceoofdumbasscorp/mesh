@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shellWriteTargets } from '../src/shell.ts';
+import { analyzeShellCommand, shellWriteTargets } from '../src/shell.ts';
 
 test('finds a plain redirect', () => {
   assert.deepEqual(shellWriteTargets('echo hi > server/api.ts'), ['server/api.ts']);
@@ -40,6 +40,8 @@ test('finds destructive and moving commands', () => {
   assert.deepEqual(shellWriteTargets('cp /tmp/new.ts server/api.ts'), ['server/api.ts']);
   assert.deepEqual(shellWriteTargets('dd if=/tmp/x of=server/api.ts'), ['server/api.ts']);
   assert.deepEqual(shellWriteTargets('touch server/api.ts'), ['server/api.ts']);
+  assert.deepEqual(shellWriteTargets('cp -tserver /tmp/a /tmp/b'), ['server']);
+  assert.deepEqual(shellWriteTargets('mv --target-directory=server /tmp/a'), ['server']);
 });
 
 test('sees through a sudo or env prefix', () => {
@@ -70,4 +72,19 @@ test('reads nothing into ordinary read-only commands', () => {
 
 test('does not report the same file twice', () => {
   assert.deepEqual(shellWriteTargets('echo a > x.ts; echo b >> x.ts'), ['x.ts']);
+});
+
+test('marks unresolved shell writes as incomplete instead of silently allowing them', () => {
+  for (const command of [
+    'p=server/api.ts; printf x > "$p"',
+    'python -c "open(\'server/api.ts\', \'w\').write(\'x\')"',
+    'git checkout -- server/api.ts',
+    'perl -pi -e s/a/b/ server/api.ts',
+  ]) {
+    assert.equal(analyzeShellCommand(command).complete, false, command);
+  }
+});
+
+test('enumerates every in-place sed target', () => {
+  assert.deepEqual(shellWriteTargets('sed -i s/a/b/ a.ts b.ts'), ['a.ts', 'b.ts']);
 });

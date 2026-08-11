@@ -302,3 +302,14 @@ test('reap clears the alias of a merged agent', () => {
   assert.equal(registry.get('real-3'), undefined);
   assert.equal(registry.list(wsA.root).length, 0);
 });
+
+test('a global registry quota cannot be bypassed with new identities', () => {
+  const clock = testClock(1000);
+  const registry = new Registry({ clock: clock.now, maxAgents: 2 });
+  registry.register({ sessionId: 's1', provider: 'claude', workspace: wsA });
+  registry.register({ sessionId: 's2', provider: 'codex', workspace: wsA });
+  assert.throws(
+    () => registry.register({ sessionId: 's3', provider: 'other', workspace: wsA }),
+    /quota/i,
+  );
+});

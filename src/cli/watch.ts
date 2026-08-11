@@ -3,6 +3,7 @@ import { formatDuration } from './who.ts';
 import type { WhoAgent } from './who.ts';
 import { renderClaims } from './claims.ts';
 import type { ClaimRow } from './claims.ts';
+import { terminalSafe } from '../terminal.ts';
 
 export interface WatchPayload {
   workspaceLabel: string;
@@ -42,17 +43,25 @@ export function renderWatch(payload: WatchPayload): string {
     ].join('\n');
   }
 
+  const agents = payload.agents.map((agent) => ({
+    ...agent,
+    name: terminalSafe(agent.name),
+    role: agent.role === null ? null : terminalSafe(agent.role),
+    status: terminalSafe(agent.status),
+    activity: agent.activity === null ? null : terminalSafe(agent.activity),
+    waitingOn: agent.waitingOn?.map(terminalSafe),
+  }));
   const lines: string[] = [
-    `mesh watch — ${payload.workspaceLabel}   ${clockLabel(payload.now)}`,
+    `mesh watch — ${terminalSafe(payload.workspaceLabel)}   ${clockLabel(payload.now)}`,
     '',
   ];
 
-  if (payload.agents.length === 0) {
+  if (agents.length === 0) {
     lines.push('  no agents here yet');
   } else {
-    const nameWidth = Math.max(...payload.agents.map((a) => a.name.length), 6);
-    const roleWidth = Math.max(...payload.agents.map((a) => (a.role ?? '—').length), 4);
-    for (const agent of payload.agents) {
+    const nameWidth = Math.max(...agents.map((a) => a.name.length), 6);
+    const roleWidth = Math.max(...agents.map((a) => (a.role ?? '—').length), 4);
+    for (const agent of agents) {
       const mark = agent.status === 'working' ? '●' : '○';
       const activity = agent.activity ?? (agent.status === 'idle' ? 'idle' : 'starting up');
       const blocked =
@@ -67,7 +76,7 @@ export function renderWatch(payload: WatchPayload): string {
   }
 
   lines.push('', 'questions in flight:');
-  const stuck = payload.agents.filter((agent) => (agent.unanswered ?? 0) > 0);
+  const stuck = agents.filter((agent) => (agent.unanswered ?? 0) > 0);
   if (stuck.length === 0) {
     lines.push('  none');
   } else {

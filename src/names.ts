@@ -17,9 +17,13 @@ function normalizeProvider(provider: string): string {
 
 export class NameAllocator {
   #counters = new Map<string, number>();
+  static readonly MAX_PROVIDER_KINDS = 32;
 
   allocate(provider: string): string {
-    const kind = normalizeProvider(provider);
+    let kind = normalizeProvider(provider);
+    if (!this.#counters.has(kind) && this.#counters.size >= NameAllocator.MAX_PROVIDER_KINDS) {
+      kind = DEFAULT_PROVIDER;
+    }
     const next = (this.#counters.get(kind) ?? 0) + 1;
     this.#counters.set(kind, next);
     return `${kind}-${next}`;

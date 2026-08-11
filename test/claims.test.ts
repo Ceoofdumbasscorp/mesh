@@ -170,3 +170,17 @@ test('check reports which pattern matched, for the denial message', () => {
   const check = claims.check(WS, 'server/api/leads.ts', 'claude-2');
   assert.equal(check.pattern, 'server/**');
 });
+
+test('claim storage has a global ceiling and prunes expired entries', () => {
+  const clock = testClock(1000);
+  const claims = new ClaimTable({ clock: clock.now, defaultTtlMs: 1000, maxClaims: 1 });
+  claims.claim({ holder: 'a', workspaceRoot: WS, patterns: ['a/**'], mode: 'shared' });
+  assert.throws(
+    () => claims.claim({ holder: 'b', workspaceRoot: WS, patterns: ['b/**'], mode: 'shared' }),
+    /quota/i,
+  );
+  clock.advance(1001);
+  assert.doesNotThrow(() =>
+    claims.claim({ holder: 'b', workspaceRoot: WS, patterns: ['b/**'], mode: 'shared' }),
+  );
+});

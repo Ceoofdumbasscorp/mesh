@@ -1,4 +1,5 @@
 import { formatDuration } from './who.ts';
+import { terminalSafe } from '../terminal.ts';
 
 export interface ClaimRow {
   id: number;
@@ -15,9 +16,15 @@ export function renderClaims(rows: ClaimRow[]): string {
     return 'No claims held in this workspace.\nAgents claim paths with mesh_claim before editing.';
   }
 
-  const holderWidth = Math.max(...rows.map((r) => r.holder.length), 6);
+  const safeRows = rows.map((row) => ({
+    ...row,
+    holder: terminalSafe(row.holder),
+    mode: terminalSafe(row.mode),
+    patterns: row.patterns.map(terminalSafe),
+  }));
+  const holderWidth = Math.max(...safeRows.map((r) => r.holder.length), 6);
   const lines: string[] = ['claims:', ''];
-  for (const row of rows) {
+  for (const row of safeRows) {
     const soon = row.expiresInMs < EXPIRING_SOON_MS ? '  (expiring)' : '';
     lines.push(
       `  ${row.holder.padEnd(holderWidth)}  ${row.mode.padEnd(9)}  ` +

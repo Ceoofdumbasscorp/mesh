@@ -1,5 +1,5 @@
 import type { Clock } from './clock.ts';
-import { globsIntersect, matchGlob } from './glob.ts';
+import { globsIntersect, literalPrefix, matchGlob } from './glob.ts';
 
 export type ClaimMode = 'shared' | 'exclusive';
 
@@ -32,24 +32,31 @@ export interface ClaimTableOptions {
   clock: Clock;
   /** How long a claim survives without a refresh. */
   defaultTtlMs?: number;
+  maxClaims?: number;
 }
 
 const DEFAULT_TTL_MS = 15 * 60_000;
+const DEFAULT_MAX_CLAIMS = 2048;
 
 export class ClaimTable {
   #clock: Clock;
   #defaultTtlMs: number;
+  #maxClaims: number;
   #claims = new Map<number, Claim>();
   #nextId = 1;
 
   constructor(options: ClaimTableOptions) {
     this.#clock = options.clock;
     this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
+    this.#maxClaims = options.maxClaims ?? DEFAULT_MAX_CLAIMS;
   }
 
   /** Live claims in a workspace. Expiry is evaluated on read, not by a timer. */
   #live(workspaceRoot: string): Claim[] {
     const now = this.#clock();
+    for (const [id, claim] of this.#claims) {
+      if (claim.expiresAt <= now) this.#claims.delete(id);
+    }
     return [...this.#claims.values()].filter(
       (c) => c.workspaceRoot === workspaceRoot && c.expiresAt > now,
     );
@@ -80,7 +87,6 @@ export class ClaimTable {
       return { ok: true, claim: existing };
     }
 
-    const conflicts: Conflict[] = [];
     if (mode === 'exclusive') {
       for (const other of this.#live(input.workspaceRoot)) {
         if (other.holder === input.holder) continue;
@@ -88,14 +94,18 @@ export class ClaimTable {
         for (const wanted of input.patterns) {
           for (const held of other.patterns) {
             if (globsIntersect(wanted, held)) {
-              conflicts.push({ pattern: held, holder: other.holder, claimId: other.id });
+              return {
+                ok: false,
+                conflicts: [{ pattern: held, holder: other.holder, claimId: other.id }],
+              };
             }
           }
         }
       }
     }
-    if (conflicts.length > 0) return { ok: false, conflicts };
-
+    if (this.#claims.size >= this.#maxClaims) {
+      throw new RangeError(`Claim quota exceeded (${this.#maxClaims})`);
+    }
     const claim: Claim = {
       id: this.#nextId++,
       holder: input.holder,
@@ -149,7 +159,10 @@ export class ClaimTable {
       if (claim.holder === requester) continue;
       if (claim.mode !== 'exclusive') continue;
       for (const pattern of claim.patterns) {
-        if (matchGlob(pattern, path)) {
+        const prefix = literalPrefix(pattern).replace(/\/+$/, '');
+        const affectsClaimedDescendant =
+          path === '.' || (prefix.length > 0 && (prefix === path || prefix.startsWith(`${path}/`)));
+        if (matchGlob(pattern, path) || affectsClaimedDescendant) {
           return { allowed: false, holder: claim.holder, claimId: claim.id, pattern };
         }
       }

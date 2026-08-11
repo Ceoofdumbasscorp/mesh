@@ -6,6 +6,8 @@ import type { WhoAgent } from '../cli/who.ts';
 import { formatDuration } from '../cli/who.ts';
 import { isWorkspaceEnabled } from '../enabled.ts';
 import { resolveWorkspace } from '../workspace.ts';
+import { removeSessionCapability, writeSessionCapability } from '../session-capability.ts';
+import { terminalSafe } from '../terminal.ts';
 
 export interface McpOptions {
   sessionId: string;
@@ -81,7 +83,8 @@ export function describeWho(agents: WhoAgent[]): string {
     .map((a) => {
       const role = a.role ? ` (${a.role})` : '';
       const doing = a.activity ?? (a.status === 'idle' ? 'idle' : 'starting up');
-      return `${a.name}${role} — ${a.status}, last seen ${formatDuration(a.idleMs)} ago: ${doing}`;
+      return `${terminalSafe(a.name)}${terminalSafe(role)} — ${terminalSafe(a.status)}, ` +
+        `last seen ${formatDuration(a.idleMs)} ago: ${terminalSafe(doing)}`;
     })
     .join('\n');
 }
@@ -115,13 +118,16 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     // since it connects and disconnects on every tool call.
     own: true,
   });
+  if (!registered.ok || typeof registered.capability !== 'string') {
+    client.close();
+    throw new Error(`mesh: secure session registration failed: ${registered.error ?? 'missing capability'}`);
+  }
+  writeSessionCapability(process.ppid, registered.capability);
 
   // Our own name in this workspace, used to filter ourselves out of mesh_who.
   const selfName = typeof registered.name === 'string' ? registered.name : null;
 
   const server = new McpServer({ name: 'mesh', version: '0.1.0' });
-  const session = { sessionId: options.sessionId };
-
   server.registerTool(
     'mesh_who',
     {
@@ -130,7 +136,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
       inputSchema: {},
     },
     async () => {
-      const res = await client.request('who', { cwd: options.cwd, ...session });
+      const res = await client.request('who', { cwd: options.cwd });
       return toolText(describeWho(peersOf((res.agents ?? []) as WhoAgent[], selfName)));
     },
   );
@@ -146,7 +152,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
       },
     },
     async ({ to, body }) => {
-      const res = await client.request('send', { to, body, ...session });
+      const res = await client.request('send', { to, body });
       return toolText(
         res.ok ? `Sent to ${(res.to as string[]).join(', ')}.` : `Failed: ${res.error}`,
       );
@@ -169,7 +175,6 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
         to,
         body,
         ...(timeoutMs ? { timeoutMs } : {}),
-        ...session,
       });
       if (!res.ok) return toolText(`Could not ask: ${res.error}`);
       if (res.state === 'answered') return toolText(`${res.from} answered: ${res.body}`);
@@ -187,7 +192,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
       },
     },
     async ({ askId, body }) => {
-      const res = await client.request('reply', { askId, body, ...session });
+      const res = await client.request('reply', { askId, body });
       return toolText(res.ok ? `Answered ${res.to}.` : `Failed: ${res.error}`);
     },
   );
@@ -218,7 +223,6 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
         patterns,
         ...(mode ? { mode } : {}),
         ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
-        ...session,
       });
       if (!res.ok) return toolText(`Could not claim: ${res.error}`);
       return toolText(
@@ -245,7 +249,6 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     async ({ patterns }) => {
       const res = await client.request('release', {
         ...(patterns ? { patterns } : {}),
-        ...session,
       });
       return toolText(res.ok ? `Released ${res.released} claim(s).` : `Failed: ${res.error}`);
     },
@@ -258,7 +261,7 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
       inputSchema: {},
     },
     async () => {
-      const res = await client.request('inbox', session);
+      const res = await client.request('inbox');
       const messages = (res.messages ?? []) as Array<Record<string, unknown>>;
       if (messages.length === 0) return toolText('No new messages.');
       return toolText(
@@ -273,5 +276,10 @@ export async function startMcpServer(options: McpOptions): Promise<void> {
     },
   );
 
-  await server.connect(new StdioServerTransport());
+  try {
+    await server.connect(new StdioServerTransport());
+  } finally {
+    removeSessionCapability(process.ppid);
+    client.close();
+  }
 }

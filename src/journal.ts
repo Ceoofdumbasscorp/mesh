@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, chmodSync, readFileSync, renameSync, statSync } from 'node:fs';
 import type { Clock } from './clock.ts';
 
 /**
@@ -52,6 +52,7 @@ export class Journal {
     if (this.#size < 0) {
       try {
         this.#size = statSync(this.#file).size;
+        chmodSync(this.#file, 0o600);
       } catch {
         this.#size = 0;
       }
@@ -60,7 +61,8 @@ export class Journal {
 
     // appendFileSync is atomic for writes this small, so a crash cannot
     // interleave two entries into one corrupt line.
-    appendFileSync(this.#file, line, 'utf8');
+    appendFileSync(this.#file, line, { encoding: 'utf8', mode: 0o600, flag: 'a' });
+    chmodSync(this.#file, 0o600);
     this.#size += Buffer.byteLength(line);
   }
 

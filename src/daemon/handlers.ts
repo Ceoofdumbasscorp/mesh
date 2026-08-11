@@ -7,6 +7,8 @@ import type { Mailbox } from '../mailbox.ts';
 import type { AskRegistry } from '../asks.ts';
 import type { ClaimTable } from '../claims.ts';
 import type { Waiters } from './waiters.ts';
+import { randomBytes } from 'node:crypto';
+import { normalizeClaimPattern, workspaceRelativeTarget } from '../workspace.ts';
 
 export interface DaemonState {
   registry: Registry;
@@ -31,7 +33,6 @@ function reapDeadAgents(state: DaemonState): void {
     const releasedClaims = state.claims.release(agent.name);
     state.journal.append('reap', {
       name: agent.name,
-      sessionId: agent.sessionId,
       pid: agent.pid,
       releasedClaims,
     });
@@ -96,9 +97,8 @@ function readString(source: Record<string, unknown>, key: string): string | unde
 function callerOf(
   state: DaemonState,
   ctx: ConnectionContext,
-  req: Record<string, unknown>,
 ): { name: string; workspaceRoot: string } | null {
-  const sessionId = readString(req, 'sessionId') ?? ctx.sessionId;
+  const sessionId = ctx.sessionId;
   if (!sessionId) return null;
   const agent = state.registry.get(sessionId);
   if (!agent) return null;
@@ -140,24 +140,52 @@ export async function handleRequest(
     case 'register': {
       const sessionId = readString(req, 'sessionId');
       if (!sessionId) return fail(id, 'register requires "sessionId"');
+      if (Buffer.byteLength(sessionId) > 256) return fail(id, 'sessionId exceeds 256 bytes');
       const provider = readString(req, 'provider');
       if (!provider) return fail(id, 'register requires "provider"');
+      if (Buffer.byteLength(provider) > 64) return fail(id, 'provider exceeds 64 bytes');
 
       const workspace = resolveWorkspace(readString(req, 'cwd') ?? process.cwd());
+      const bound = ctx.sessionId ? state.registry.get(ctx.sessionId) : undefined;
+      const requested = state.registry.get(sessionId);
+      if (
+        bound &&
+        (!requested || requested.name !== bound.name || requested.workspaceRoot !== bound.workspaceRoot)
+      ) {
+        return fail(id, 'connection is already bound to another session');
+      }
       // The hook re-registers before every tool call, so journaling every
       // register buried the interesting events under thousands of identical
       // lines and grew the file for no information.
       const alreadyKnown = state.registry.get(sessionId) !== undefined;
-      const agent = state.registry.register({
-        sessionId,
-        provider,
-        workspace,
-        role: readString(req, 'role'),
-        pid: typeof req.pid === 'number' ? req.pid : undefined,
-        // The registry needs this too, not just the connection: it is the only
-        // evidence that separates a rotated session id from a second agent.
-        owns: req.own === true,
-      });
+      const suppliedCapability = readString(req, 'capability');
+      if (suppliedCapability && Buffer.byteLength(suppliedCapability) > 128) {
+        return fail(id, 'capability exceeds 128 bytes');
+      }
+      const role = readString(req, 'role');
+      if (role && Buffer.byteLength(role) > 128) return fail(id, 'role exceeds 128 bytes');
+      const pid = typeof req.pid === 'number' && Number.isSafeInteger(req.pid) && req.pid > 0
+        ? req.pid
+        : undefined;
+      const capability = req.own === true
+        ? (state.registry.get(ctx.sessionId ?? '')?.capability ?? suppliedCapability ?? randomBytes(32).toString('base64url'))
+        : suppliedCapability;
+      let agent;
+      try {
+        agent = state.registry.register({
+          sessionId,
+          provider,
+          workspace,
+          ...(role ? { role } : {}),
+          ...(pid !== undefined ? { pid } : {}),
+          // The registry needs this too, not just the connection: it is the only
+          // evidence that separates a rotated session id from a second agent.
+          owns: req.own === true,
+          ...(capability ? { capability } : {}),
+        });
+      } catch (error) {
+        return fail(id, (error as Error).message);
+      }
 
       ctx.sessionId = sessionId;
       // Ownership is opt-in and sticky: a connection that ever claimed
@@ -167,7 +195,6 @@ export async function handleRequest(
       if (!alreadyKnown) {
         state.journal.append('register', {
           name: agent.name,
-          sessionId,
           provider,
           workspace: workspace.root,
         });
@@ -179,25 +206,28 @@ export async function handleRequest(
         name: agent.name,
         workspace: workspace.root,
         workspaceLabel: workspace.label,
+        ...(req.own === true ? { capability: agent.capability } : {}),
       };
     }
 
     case 'unregister': {
-      const sessionId = readString(req, 'sessionId') ?? ctx.sessionId;
+      const sessionId = ctx.sessionId;
       if (!sessionId) return fail(id, 'unregister requires "sessionId"');
 
       const removed = state.registry.unregister(sessionId);
       if (ctx.sessionId === sessionId) ctx.sessionId = null;
       if (removed) {
-        state.journal.append('unregister', { name: removed.name, sessionId });
+        state.journal.append('unregister', { name: removed.name });
       }
       return { id, ok: true, removed: removed !== null };
     }
 
     case 'touch': {
-      const sessionId = readString(req, 'sessionId') ?? ctx.sessionId;
+      const sessionId = ctx.sessionId;
       if (!sessionId) return fail(id, 'touch requires "sessionId"');
-      const known = state.registry.touch(sessionId, readString(req, 'activity'));
+      const activity = readString(req, 'activity');
+      if (activity && Buffer.byteLength(activity) > 512) return fail(id, 'activity exceeds 512 bytes');
+      const known = state.registry.touch(sessionId, activity);
       // Activity is what keeps a claim alive: an agent still working never
       // loses its claims, while a stalled one lets them lapse.
       const toucher = state.registry.get(sessionId);
@@ -215,7 +245,6 @@ export async function handleRequest(
         status: agent.status,
         activity: agent.activity,
         idleMs: agent.idleMs,
-        pid: agent.pid,
         // An idle agent cannot be reached by a hook-based transport, so the
         // human is the fallback: mesh watch shows them what is stuck.
         unanswered: state.asks.pendingFor(agent.name).length,
@@ -231,7 +260,7 @@ export async function handleRequest(
     }
 
     case 'send': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return fail(id, 'send requires a registered agent (call register first)');
       const target = readString(req, 'to');
       if (!target) return fail(id, 'send requires "to"');
@@ -264,7 +293,7 @@ export async function handleRequest(
     }
 
     case 'inbox': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return fail(id, 'inbox requires a registered agent (call register first)');
       const drain = req.drain !== false;
       const envelopes = drain ? state.mailbox.drain(caller.name) : state.mailbox.peek(caller.name);
@@ -283,7 +312,7 @@ export async function handleRequest(
     }
 
     case 'ask': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return fail(id, 'ask requires a registered agent (call register first)');
       const target = readString(req, 'to');
       if (!target) return fail(id, 'ask requires "to"');
@@ -302,7 +331,10 @@ export async function handleRequest(
         return fail(id, `"${target}" matches ${names.length} agents; ask one by name`);
       }
 
-      const timeoutMs = typeof req.timeoutMs === 'number' ? req.timeoutMs : 90_000;
+      const requestedTimeout = typeof req.timeoutMs === 'number' && Number.isFinite(req.timeoutMs)
+        ? req.timeoutMs
+        : 90_000;
+      const timeoutMs = Math.min(Math.max(Math.trunc(requestedTimeout), 1), 5 * 60_000);
       const created = state.asks.create({
         from: caller.name,
         to: targetName,
@@ -361,7 +393,7 @@ export async function handleRequest(
     }
 
     case 'reply': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return fail(id, 'reply requires a registered agent (call register first)');
       const askId = typeof req.askId === 'number' ? req.askId : null;
       if (askId === null) return fail(id, 'reply requires a numeric "askId"');
@@ -383,21 +415,44 @@ export async function handleRequest(
     }
 
     case 'claim': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return fail(id, 'claim requires a registered agent (call register first)');
-      const patterns = Array.isArray(req.patterns)
+      const rawPatterns = Array.isArray(req.patterns)
         ? req.patterns.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
         : [];
+      if (rawPatterns.length > 128) return fail(id, 'claim accepts at most 128 patterns');
+      const normalized = rawPatterns.map(normalizeClaimPattern);
+      if (normalized.some((pattern) => pattern === null)) {
+        return fail(id, 'claim patterns must be workspace-relative and contain no dot segments');
+      }
+      const patterns = [...new Set(normalized as string[])];
+      if (patterns.some((pattern) => Buffer.byteLength(pattern) > 512)) {
+        return fail(id, 'each claim pattern must be at most 512 bytes');
+      }
+      if (patterns.reduce((sum, pattern) => sum + Buffer.byteLength(pattern), 0) > 16_384) {
+        return fail(id, 'claim patterns exceed 16384 bytes');
+      }
       if (patterns.length === 0) return fail(id, 'claim requires a non-empty "patterns" array');
 
       const mode = req.mode === 'shared' ? 'shared' : 'exclusive';
-      const result = state.claims.claim({
-        holder: caller.name,
-        workspaceRoot: caller.workspaceRoot,
-        patterns,
-        mode,
-        ...(typeof req.ttlMs === 'number' ? { ttlMs: req.ttlMs } : {}),
-      });
+      let result;
+      try {
+        const requestedTtl = typeof req.ttlMs === 'number' && Number.isFinite(req.ttlMs)
+          ? req.ttlMs
+          : undefined;
+        const ttlMs = requestedTtl === undefined
+          ? undefined
+          : Math.min(Math.max(Math.trunc(requestedTtl), 1000), 24 * 60 * 60_000);
+        result = state.claims.claim({
+          holder: caller.name,
+          workspaceRoot: caller.workspaceRoot,
+          patterns,
+          mode,
+          ...(ttlMs !== undefined ? { ttlMs } : {}),
+        });
+      } catch (error) {
+        return fail(id, (error as Error).message);
+      }
 
       if (!result.ok) {
         const first = result.conflicts[0];
@@ -420,7 +475,7 @@ export async function handleRequest(
     }
 
     case 'release': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       const patterns = Array.isArray(req.patterns)
         ? req.patterns.filter((p): p is string => typeof p === 'string')
         : undefined;
@@ -453,7 +508,7 @@ export async function handleRequest(
     }
 
     case 'claims': {
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       const root =
         caller?.workspaceRoot ?? resolveWorkspace(readString(req, 'cwd') ?? process.cwd()).root;
       const now = state.clock();
@@ -473,16 +528,16 @@ export async function handleRequest(
     case 'check': {
       // A claim held by a session that has since died must not block anyone.
       reapDeadAgents(state);
-      const caller = callerOf(state, ctx, req);
+      const caller = callerOf(state, ctx);
       if (!caller) return { id, ok: true, allowed: true };
       const rawPath = readString(req, 'path');
       if (!rawPath) return { id, ok: true, allowed: true };
 
       // Accept absolute or workspace-relative paths: hooks report absolute
       // ones, agents think in relative ones, and both must hit the same claim.
-      const relative = rawPath.startsWith(caller.workspaceRoot)
-        ? rawPath.slice(caller.workspaceRoot.length).replace(/^\/+/, '')
-        : rawPath;
+      const cwd = readString(req, 'cwd') ?? caller.workspaceRoot;
+      const relative = workspaceRelativeTarget(caller.workspaceRoot, cwd, rawPath);
+      if (relative === null) return { id, ok: true, allowed: true };
 
       const verdict = state.claims.check(caller.workspaceRoot, relative, caller.name);
       if (verdict.allowed) return { id, ok: true, allowed: true };

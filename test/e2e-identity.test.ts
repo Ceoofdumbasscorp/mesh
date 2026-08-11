@@ -33,7 +33,7 @@ test('an MCP server and a hook for one session produce one agent', async () => {
     // session's lifetime.
     const mcp = await MeshClient.open({ socketPath, autostart: false });
     assert.ok(mcp);
-    await mcp.request('register', {
+    const owner = await mcp.request('register', {
       sessionId: 'pid-4242',
       provider: 'codex',
       cwd: base,
@@ -49,8 +49,9 @@ test('an MCP server and a hook for one session produce one agent', async () => {
       provider: 'codex',
       cwd: base,
       pid: 4242,
+      capability: owner.capability,
     });
-    await hook.request('touch', { sessionId: '019fa0a8-8039-70c3', activity: 'Edit server.ts' });
+    await hook.request('touch', { activity: 'Edit server.ts' });
     hook.close();
 
     const who = await mcp.request('who', { cwd: base });
@@ -75,7 +76,7 @@ test('a claim survives the merge, because the agent keeps its name', async () =>
   await withDaemon(async (socketPath, base) => {
     const mcp = await MeshClient.open({ socketPath, autostart: false });
     assert.ok(mcp);
-    await mcp.request('register', {
+    const owner = await mcp.request('register', {
       sessionId: 'pid-4242', provider: 'codex', cwd: base, pid: 4242, own: true,
     });
     const claimed = await mcp.request('claim', {
@@ -87,7 +88,7 @@ test('a claim survives the merge, because the agent keeps its name', async () =>
     const hook = await MeshClient.open({ socketPath, autostart: false });
     assert.ok(hook);
     await hook.request('register', {
-      sessionId: 'real-1', provider: 'codex', cwd: base, pid: 4242,
+      sessionId: 'real-1', provider: 'codex', cwd: base, pid: 4242, capability: owner.capability,
     });
 
     const claims = await mcp.request('claims', { cwd: base });
@@ -106,7 +107,7 @@ test('a rotated real session id stays one agent over the daemon protocol', async
     const hook = await MeshClient.open({ socketPath, autostart: false });
     assert.ok(mcp && hook);
 
-    await mcp.request('register', {
+    const owner = await mcp.request('register', {
       sessionId: 'launch-id',
       provider: 'claude',
       cwd: base,
@@ -128,9 +129,9 @@ test('a rotated real session id stays one agent over the daemon protocol', async
       provider: 'claude',
       cwd: base,
       pid: 98940,
+      capability: owner.capability,
     });
     await hook.request('touch', {
-      sessionId: 'rotated-id',
       activity: 'Edit engine.ts',
     });
 

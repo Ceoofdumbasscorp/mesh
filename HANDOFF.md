@@ -87,8 +87,9 @@ been abandoned.
    Claude Code **does** export `CLAUDE_CODE_SESSION_ID` to its MCP servers, equal to the hook's
    `session_id`. Codex exports nothing and scrubs the MCP server's environment entirely. On both
    hosts the hook and the MCP server share a ppid — the host process — so the daemon reconciles a
-   provisional `pid-<n>` id with the real one by `(workspaceRoot, pid)`. The per-pid-file option
-   was dropped; it is unnecessary.
+   provisional `pid-<n>` id with the real one by `(workspaceRoot, pid)`. A random owner capability
+   is stored in an owner-only per-host file and is required before a transient hook can attach to
+   an already-owned identity.
 
    **Trap:** a Codex session launched from a Claude session inherits `CLAUDE_CODE_SESSION_ID`. It
    is only trusted when the provider is Claude.
@@ -153,8 +154,9 @@ same workspace as its root.
   `docs/superpowers/specs/2026-07-25-mesh-design.md`, no plan written. `mesh board` / `mesh assign`
   belong to it, not to Phase 5.
 - **Shell enforcement is pattern-based.** `src/shell.ts` recognizes redirections, `tee`, `sed -i`,
-  `mv`/`cp`/`rm`, `dd of=`. Anything exotic proceeds rather than being blocked on a guess. Claims
-  coordinate cooperating agents; they are not a sandbox.
+  `mv`/`cp`/`rm`, `dd of=`. Unresolved or exotic syntax is checked as a whole-workspace write, so
+  it is blocked while another agent holds an exclusive claim. Claims coordinate agents under one
+  OS account; they are not an OS sandbox.
 
 ## Resuming
 

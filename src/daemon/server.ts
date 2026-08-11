@@ -20,9 +20,15 @@ export interface ServerOptions {
   /** Exit after this long with no connections. Zero disables. */
   idleShutdownMs?: number;
   onShutdown?: () => void;
+  maxConnections?: number;
+  maxInFlightPerConnection?: number;
+  maxPendingOutputBytes?: number;
 }
 
 const DEFAULT_IDLE_SHUTDOWN_MS = 30 * 60_000;
+const DEFAULT_MAX_CONNECTIONS = 64;
+const DEFAULT_MAX_IN_FLIGHT = 32;
+const DEFAULT_MAX_PENDING_OUTPUT_BYTES = 1024 * 1024;
 
 export function createDaemonState(options: {
   journalPath: string;
@@ -100,6 +106,10 @@ export class MeshServer {
   }
 
   #onConnection(socket: Socket): void {
+    if (this.#connections.size >= (this.#options.maxConnections ?? DEFAULT_MAX_CONNECTIONS)) {
+      socket.destroy();
+      return;
+    }
     this.#connections.add(socket);
     this.#clearIdleTimer();
 
@@ -116,6 +126,7 @@ export class MeshServer {
       },
     };
     const decode = createFrameDecoder();
+    let inFlight = 0;
 
     socket.on('data', (chunk) => {
       let frames: unknown[];
@@ -127,6 +138,11 @@ export class MeshServer {
         return;
       }
       for (const frame of frames) {
+        if (inFlight >= (this.#options.maxInFlightPerConnection ?? DEFAULT_MAX_IN_FLIGHT)) {
+          socket.destroy(new Error('mesh: too many in-flight requests'));
+          return;
+        }
+        inFlight += 1;
         // Each frame is handled independently and concurrently. A blocking ask
         // must never stall another connection — or another op on this one.
         void (async () => {
@@ -137,12 +153,26 @@ export class MeshServer {
             response = { id: 0, ok: false, error: `daemon error: ${(error as Error).message}` };
           }
           if (!socket.destroyed) {
-            socket.write(encodeFrame(response), () => {
+            const encoded = encodeFrame(response);
+            if (
+              socket.writableLength + Buffer.byteLength(encoded) >
+              (this.#options.maxPendingOutputBytes ?? DEFAULT_MAX_PENDING_OUTPUT_BYTES)
+            ) {
+              socket.destroy(new Error('mesh: pending output quota exceeded'));
+              inFlight -= 1;
+              return;
+            }
+            const writable = socket.write(encoded, () => {
               if (shutdownRequested) {
                 void this.close().then(() => this.#options.onShutdown?.());
               }
             });
+            if (!writable) {
+              socket.pause();
+              socket.once('drain', () => socket.resume());
+            }
           }
+          inFlight -= 1;
         })();
       }
     });
@@ -159,9 +189,16 @@ export class MeshServer {
           const releasedClaims = this.#options.state.claims.release(removed.name);
           this.#options.state.journal.append('disconnect', {
             name: removed.name,
-            sessionId: ctx.sessionId,
             releasedClaims,
           });
+        }
+        ctx.sessionId = null;
+      } else if (ctx.sessionId) {
+        const transient = this.#options.state.registry.get(ctx.sessionId);
+        if (transient && !transient.owned && transient.pid === null) {
+          this.#options.state.registry.unregister(ctx.sessionId);
+          this.#options.state.mailbox.clear(transient.name);
+          this.#options.state.claims.release(transient.name);
         }
         ctx.sessionId = null;
       }

@@ -157,9 +157,16 @@ test('a transient connection closing does NOT unregister the agent', async () =>
 
   try {
     // The MCP server: one long-lived owning connection per session.
-    await owner.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base, own: true });
+    const registered = await owner.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base, own: true });
     // A hook firing: connect, report, disconnect — on every single tool call.
-    await hook.request({ id: 1, op: 'register', sessionId: 'sa', provider: 'claude', cwd: base });
+    await hook.request({
+      id: 1,
+      op: 'register',
+      sessionId: 'sa',
+      provider: 'claude',
+      cwd: base,
+      capability: registered.capability,
+    });
     await hook.close();
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -233,6 +240,27 @@ test('close removes the socket file', async () => {
   try {
     assert.equal(existsSync(socketPath), false);
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('rejects connections beyond the configured global limit', async () => {
+  const base = scratch();
+  const socketPath = join(base, 'mesh.sock');
+  const server = new MeshServer({ socketPath, state: makeState(base), maxConnections: 1 });
+  await server.start();
+
+  const first = rawClient(socketPath);
+  await first.ready;
+  const second = rawClient(socketPath);
+  try {
+    await second.ready;
+    await once(second.socket, 'close');
+    assert.equal(server.connectionCount, 1);
+  } finally {
+    second.socket.destroy();
+    await first.close();
+    await server.close();
     rmSync(base, { recursive: true, force: true });
   }
 });

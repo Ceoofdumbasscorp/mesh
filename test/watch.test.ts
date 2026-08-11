@@ -29,6 +29,19 @@ test('renderWatch shows each agent with what it is doing', () => {
   assert.match(out, /ctrl-c/i, 'a TUI says how to leave it');
 });
 
+test('renderWatch escapes terminal control characters from daemon fields', () => {
+  const out = renderWatch({
+    workspaceLabel: 'repo\u001b]52;c;owned\u0007',
+    agents: [agent({ role: 'front\nend', activity: '\u001b[2Jspoofed' })],
+    claims: [],
+    now: 0,
+    daemonReachable: true,
+  });
+  assert.doesNotMatch(out, /[\u0007\u001b]/);
+  assert.match(out, /\\u001b/);
+  assert.match(out, /\\n/);
+});
+
 test('renderWatch surfaces unanswered questions so the human can nudge', () => {
   const out = renderWatch({
     workspaceLabel: 'w',
