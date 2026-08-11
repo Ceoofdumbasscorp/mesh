@@ -2,17 +2,19 @@ export const MESH_NOTE_BEGIN = '<!-- mesh:begin -->';
 export const MESH_NOTE_END = '<!-- mesh:end -->';
 
 /**
- * Written to the agent, not the user. Injected context and denial text already
- * tell an agent what to do in the moment; this exists so it knows the tools are
- * there before anything goes wrong.
+ * Written to every host's global agent instructions, so it must be honest in
+ * workspaces where mesh is off. The MCP server deliberately exposes zero
+ * tools there; agents must not be told to call tools they cannot access.
  */
-const NOTE = `## mesh — you are not alone in this project
+const NOTE = `## mesh — coordinate when the tools are available
 
-Other AI agents may be working in this same project, in other terminal windows.
-They are peers, not your sub-agents.
+mesh is opt-in per workspace. If this session exposes \`mesh_*\` tools, other AI
+agents may be working in this project in other terminal windows. They are peers,
+not your sub-agents. If the tools are absent, mesh is off here; do not attempt
+to call them. The operator can run \`mesh on\` in the project and restart agents.
 
-- \`mesh_who\` — see who else is here and what they are doing. Check before
-  assuming you are the only one editing.
+- \`mesh_who\` — when available, see who else is here and what they are doing.
+  Check before assuming you are the only one editing.
 - \`mesh_ask\` — ask a peer a question and wait for the answer. Use it when you
   are blocked on something they own, instead of guessing.
 - \`mesh_send\` — tell a peer something they need to know. No reply expected.

@@ -45,6 +45,8 @@ Requires Node 22.6 or newer.
 npm install
 npm run build
 node dist/cli/index.js init
+cd /path/to/the/project-you-want-to-mesh
+mesh on
 mesh doctor
 ```
 
@@ -54,7 +56,9 @@ mesh doctor
 It backs up every file before touching it and is safe to re-run — a second run
 repoints, it does not duplicate. Preview it first with `mesh init --dry-run`.
 
-Then **restart your agents.** A running session keeps the hooks it started with.
+Mesh is opt-in per project. Run `mesh on` from a repository root, then
+**restart your agents from that repository.** A running session keeps the MCP
+tool list it started with. Use `mesh off` to disable it there again.
 
 **Codex may ask once.** Under the default approval policy, the first launch
 after `mesh init` prompts you to approve its hooks. Other host policies may run
@@ -67,6 +71,8 @@ mesh never writes trust state itself.
 | Command | Purpose |
 |---|---|
 | `mesh init` | Wire mesh into Claude Code and Codex. `--dry-run` to preview |
+| `mesh on` / `mesh off` | Enable or disable mesh for the current repository |
+| `mesh status` | Show whether mesh is enabled here and list enabled repositories |
 | `mesh watch` | Live view: agents, questions in flight, claims held |
 | `mesh who` | One-shot snapshot |
 | `mesh claims` | Who has claimed what |
@@ -104,10 +110,27 @@ different workspaces cannot see each other.
 
 ## The agent's tools
 
-An agent gets seven tools: `mesh_who`, `mesh_send`, `mesh_ask`, `mesh_reply`,
-`mesh_inbox`, `mesh_claim`, `mesh_release`. `mesh init` also writes a short
-usage note into each host's instructions file, so an agent knows to claim a
-path before working in it and to release when done.
+In a workspace enabled with `mesh on`, an agent gets seven tools: `mesh_who`,
+`mesh_send`, `mesh_ask`, `mesh_reply`, `mesh_inbox`, `mesh_claim`, and
+`mesh_release`. Disabled workspaces complete the MCP handshake with zero tools
+and never start the daemon. `mesh init` also writes a conditional usage note
+into each host's instructions file, so agents coordinate when the tools are
+present without trying to call missing tools when mesh is off.
+
+## Troubleshooting
+
+If an agent sees the mesh instructions but has no `mesh_*` tools, run:
+
+```bash
+cd /path/to/your/repository
+mesh status
+mesh on
+mesh doctor
+```
+
+Then restart that agent from the same repository. Registration alone is not
+activation: `mesh init` installs the integration globally, while `mesh on`
+activates it only for the current workspace.
 
 ## Three honest limitations
 

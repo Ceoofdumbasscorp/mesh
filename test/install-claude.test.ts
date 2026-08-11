@@ -127,6 +127,8 @@ test('withMeshNote adds a fenced, attributed block once', () => {
   const first = withMeshNote('# My instructions\n');
   assert.match(first, /My instructions/);
   assert.match(first, /mesh_who/);
+  assert.match(first, /opt-in per workspace/);
+  assert.match(first, /If the tools are absent, mesh is off here/);
   assert.ok(first.includes(MESH_NOTE_BEGIN));
 
   const second = withMeshNote(first);

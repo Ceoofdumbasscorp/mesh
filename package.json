@@ -2,8 +2,25 @@
   "name": "@krish/mesh",
   "version": "0.1.0",
   "description": "Cross-agent collaboration for terminal coding agents",
+  "author": "Krish <kbio9608@gmail.com>",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ceoofdumbasscorp/mesh.git"
+  },
+  "homepage": "https://github.com/Ceoofdumbasscorp/mesh#readme",
+  "bugs": {
+    "url": "https://github.com/Ceoofdumbasscorp/mesh/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "codex",
+    "claude-code",
+    "mcp",
+    "developer-tools",
+    "collaboration"
+  ],
   "engines": {
     "node": ">=22.6"
   },
