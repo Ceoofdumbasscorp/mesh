@@ -1,7 +1,7 @@
 # The MESH CLI
 
 <p align="center">
-  <img src="assets/mesh-cli-hero.png" alt="The MESH CLI — AI coding agents connected through a luminous collaborative mesh" width="100%">
+  <img src="assets/mesh-cli-hero.png" alt="The MESH CLI — two AI coding agents coordinating through a shared mesh" width="100%">
 </p>
 
 <p align="center"><strong>Make your AI coding agents work as a team.</strong></p>
